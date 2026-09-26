@@ -13,8 +13,8 @@ import type { Criterion, Job, Rubric } from "@/lib/types";
 type R = Rubric & { rubric_criteria: Criterion[] };
 type C = Pick<Criterion, "id" | "kind" | "name" | "description" | "weight" | "enabled" | "source_constraint" | "bias_flag" | "rule" | "stage"> & { isNew?: boolean };
 
-/** Weighted items that make up a stage's score. */
-const scoresIn = (c: C, stage: 1 | 2) => c.stage === stage && c.enabled && (c.kind === "soft" || (c.kind === "rule" && c.rule?.action === "score"));
+/** Weighted items that make up a stage's score. In stage 1, every filter earns its points when passed. */
+const scoresIn = (c: C, stage: 1 | 2) => c.stage === stage && c.enabled && (c.kind === "soft" || (c.kind === "rule" && c.weight > 0));
 
 export function RubricEditor({ job, current, draft, candidateCount, questions }: {
   job: Job;

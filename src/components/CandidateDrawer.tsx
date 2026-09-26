@@ -34,7 +34,7 @@ export function CandidateDrawer({ job, candidate: c, criteria, stages, onClose, 
   const soft = results.filter((x) => x.crit!.kind === "soft");
   const rules = results.filter((x) => x.crit!.kind === "rule");
   const totalW = results
-    .filter((x) => x.crit!.kind === "soft" || (x.crit!.kind === "rule" && x.crit!.rule?.action === "score"))
+    .filter((x) => x.crit!.kind === "soft" || (x.crit!.kind === "rule" && x.crit!.weight > 0))
     .reduce((a, x) => a + x.crit!.weight, 0);
   const version = results[0]?.crit?.version;
 
@@ -107,7 +107,7 @@ export function CandidateDrawer({ job, candidate: c, criteria, stages, onClose, 
         {rules.length > 0 && <h3 style={{ marginBottom: 10 }}>Form rules</h3>}
         {rules.map(({ r, crit }) => (
           <Evidence key={r.id} name={crit!.name} r={r} threshold={threshold}
-            weight={crit!.rule?.action === "score" && totalW ? Math.round((crit!.weight / totalW) * 100) : undefined}
+            weight={crit!.weight > 0 && totalW ? Math.round((crit!.weight / totalW) * 100) : undefined}
             note={crit!.rule?.action === "reject" ? "reject if not met" : crit!.rule?.action === "flag" ? "flag if not met" : undefined} />
         ))}
         {e && rules.length > 0 && hard.length + soft.length === 0 && e.disqualified && (

@@ -47,6 +47,29 @@ export function CandidatesTable(props: {
   const [open, setOpen] = useState<string | null>(props.openId);
   const [mailTo, setMailTo] = useState<string[] | null>(null);
   const threshold = Number(job.recheck_threshold);
+  const critById = useMemo(() => new Map(props.criteria.map((c) => [c.id, c])), [props.criteria]);
+
+  /** Stage-1 breakdown: filters passed, the free-text answers' own score, and what needs review. */
+  const breakdown = (e: NonNullable<CandidateRow["evaluation"]>) => {
+    const rs = e.criterion_results.map((r) => ({ r, c: critById.get(r.criterion_id) })).filter((x) => x.c);
+    const filters = rs.filter((x) => x.c!.kind === "rule");
+    const soft = rs.filter((x) => x.c!.kind === "soft");
+    const w = soft.reduce((a, x) => a + x.c!.weight, 0);
+    const val: Record<string, number> = { meets: 1, borderline: 0.5, not_met: 0 };
+    const answers = w ? Math.round((soft.reduce((a, x) => a + x.c!.weight * (val[x.r.decision] ?? 0), 0) / w) * 100) : null;
+    const review = rs
+      .filter(({ r, c }) =>
+        r.decision === "unclear" ||
+        (c!.kind === "rule" && c!.rule?.action === "flag" && r.decision === "fail") ||
+        (r.scored_by !== "rule" && Number(r.confidence) < threshold))
+      .map(({ c }) => c!.name);
+    return {
+      filters: { passed: filters.filter((x) => x.r.decision === "pass").length, total: filters.length },
+      answers,
+      review,
+      aiJudged: rs.some((x) => x.r.scored_by !== "rule"),
+    };
+  };
 
   const match = (c: CandidateRow, f: string) => {
     const e = c.evaluation && !c.stale ? c.evaluation : null;
@@ -179,22 +202,37 @@ export function CandidatesTable(props: {
           <tbody>
             {rows.map((c) => {
               const e = c.evaluation;
-              const [cl, ck] = e ? confLevel(e.needs_review ? Math.min(Number(e.confidence), threshold - 0.01) : Number(e.confidence), threshold) : ["", "neutral"];
+              const b = e ? breakdown(e) : null;
+              const [cl, ck] = e && b?.aiJudged ? confLevel(Number(e.confidence), threshold) : ["", "neutral"];
               const rechecked = e?.criterion_results.filter((r) => r.initial_confidence != null).length ?? 0;
               return (
                 <tr key={c.id} className={`${e?.disqualified ? "dq" : ""} ${c.stale ? "stale" : ""}`} onClick={(ev) => { if (!(ev.target as HTMLElement).closest("input")) openCandidate(c.id); }}>
                   <td><input type="checkbox" checked={sel.has(c.id)} onChange={(ev) => toggle(c.id, ev.target.checked)} aria-label={`Select ${c.name}`} /></td>
                   <td className="rank">{c.rank ?? "—"}</td>
                   <td className="who"><b>{c.name}</b><span>{c.email ?? "no email"}</span></td>
-                  <td>{e ? (
-                    <div className="scorecell"><span className="n">{e.score}</span><span className={`bar ${e.disqualified ? "dim" : ""}`}><i style={{ width: `${e.score}%` }} /></span></div>
-                  ) : <span className="muted">—</span>}</td>
-                  <td>{e ? (
-                    <>
-                      <span className={`chip ${ck}`}>{cl} <span className="mono">{Number(e.confidence).toFixed(2)}</span></span>
-                      {rechecked > 0 && <div className="hint" style={{ marginTop: 4 }}>↻ {rechecked} rechecked by {providerLabel(e!.criterion_results.find((r) => r.initial_confidence != null)?.scored_by)}</div>}
-                    </>
-                  ) : null}</td>
+                  <td>{!e ? <span className="muted">—</span> : e.disqualified ? (
+                    <span className="chip bad" title={e.reason}>✕ Rejected by filter</span>
+                  ) : (
+                    <div style={{ display: "grid", gap: 4 }}>
+                      <div className="scorecell"><span className="n">{e.score}</span><span className="bar"><i style={{ width: `${e.score}%` }} /></span></div>
+                      <span className="hint mono" style={{ margin: 0, fontSize: 12 }}>
+                        {b!.filters.total > 0 && <>Filters {b!.filters.passed}/{b!.filters.total} ✓</>}
+                        {b!.filters.total > 0 && b!.answers != null && " · "}
+                        {b!.answers != null && <>Answers {b!.answers}/100</>}
+                      </span>
+                    </div>
+                  )}</td>
+                  <td>{!e ? null : (
+                    <div style={{ display: "grid", gap: 4, justifyItems: "start" }}>
+                      {b!.aiJudged
+                        ? <span className={`chip ${ck}`} title="Average confidence of the AI's judgements">{cl} <span className="mono">{Number(e.confidence).toFixed(2)}</span></span>
+                        : <span className="muted" title="No AI judgement — decided by exact filters only">—</span>}
+                      {e.needs_review && !e.disqualified && (
+                        <span className="chip warn" title={b!.review.join("; ")}>Needs review{b!.review.length ? `: ${b!.review[0]}${b!.review.length > 1 ? ` +${b!.review.length - 1}` : ""}` : ""}</span>
+                      )}
+                      {rechecked > 0 && <span className="hint" style={{ margin: 0 }}>↻ {rechecked} rechecked by {providerLabel(e.criterion_results.find((r) => r.initial_confidence != null)?.scored_by)}</span>}
+                    </div>
+                  )}</td>
                   <td onClick={(ev) => ev.stopPropagation()}>
                     {!c.inStage2 ? (
                       e?.disqualified ? <span className="muted">—</span> : (

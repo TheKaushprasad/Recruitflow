@@ -192,6 +192,7 @@ export async function scoreCandidate(db: SupabaseClient, job: Job, rubricId: str
   const agg = aggregate(
     finals.map((f) => ({ kind: f.criterion.kind, action: f.criterion.rule?.action, weight: f.criterion.weight, decision: f.decision, confidence: f.confidence })),
     threshold,
+    { filterPoints: true }, // passing stage-1 filters counts toward the stage-1 score
   );
 
   const failedFilter =

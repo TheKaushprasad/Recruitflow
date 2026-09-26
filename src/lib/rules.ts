@@ -59,7 +59,7 @@ export const OP_LABEL: Record<RuleOp, string> = {
 export const ACTION_LABEL: Record<RuleAction, string> = {
   reject: "Reject if not met",
   flag: "Flag for review if not met",
-  score: "Add to score",
+  score: "Points only (never rejects or flags)",
 };
 
 const WORDS: Record<string, number> = {

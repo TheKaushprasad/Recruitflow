@@ -15,13 +15,17 @@ export interface AggregateInput {
 /**
  * Pure aggregation — shared by stage 1, stage 2 and tests.
  * - soft criteria and "score" rules make up the weighted score (borderline / unclear count half)
+ * - with `filterPoints` (stage 1), every filter adds its weight when passed, so passing the basics
+ *   counts even when the open-ended answers are thin
  * - failing an AI hard filter or a "reject" rule disqualifies
  * - low AI confidence, an unclear hard filter, a failed "flag" rule, or any unclear rule
  *   (blank or unreadable answer) marks the candidate for review — never an automatic reject
- * - confidence averages the AI judgements only; rules are exact
+ * - confidence averages the AI judgements only; rules are exact. `aiJudged` says whether there were any.
  */
-export function aggregate(results: AggregateInput[], threshold: number) {
-  const scored = results.filter((r) => r.kind === "soft" || (r.kind === "rule" && r.action === "score"));
+export function aggregate(results: AggregateInput[], threshold: number, opts: { filterPoints?: boolean } = {}) {
+  const scored = results.filter(
+    (r) => r.kind === "soft" || (r.kind === "rule" && (r.action === "score" || (opts.filterPoints && r.weight > 0))),
+  );
   const totalW = scored.reduce((a, r) => a + r.weight, 0);
   const value = (r: AggregateInput) => (r.kind === "rule" ? RULE_VALUE[r.decision] : SOFT_VALUE[r.decision]) ?? 0;
   const score = totalW ? Math.round((scored.reduce((a, r) => a + r.weight * value(r), 0) / totalW) * 100) : 0;
@@ -38,5 +42,5 @@ export function aggregate(results: AggregateInput[], threshold: number) {
     (ai.some((r) => r.confidence < threshold) ||
       hard.some((r) => r.decision === "unclear") ||
       rules.some((r) => r.decision === "unclear" || (r.action === "flag" && r.decision === "fail")));
-  return { score, disqualified, confidence, needsReview };
+  return { score, disqualified, confidence, needsReview, aiJudged: ai.length > 0 };
 }

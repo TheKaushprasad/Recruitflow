@@ -81,7 +81,7 @@ export function FormRulesEditor({ rows, editable, questions, scoreTotal, onPatch
             </span>
             <div className="x">
               <b>{r.name}</b>
-              {r.rule && <div className="src">{describeRule(r.rule)}{r.rule.action === "score" && scoreTotal ? ` · ${Math.round((r.weight / scoreTotal) * 100)}% of score` : ""}</div>}
+              {r.rule && <div className="src">{describeRule(r.rule)}{scoreTotal && r.weight ? ` · ${Math.round((r.weight / scoreTotal) * 100)}% of the stage-1 score when met` : ""}</div>}
               {r.source_constraint && <div className="src">From your constraint: “{r.source_constraint}”</div>}
               {!r.enabled && <div className="src">Not used</div>}
             </div>
@@ -182,12 +182,11 @@ function RuleEditorRow({ row, questions, scoreTotal, onPatch, onRemove }: {
         <select id={`ra-${id}`} aria-label="If not met" value={rule.action} style={{ width: "auto" }} onChange={(e) => setRule({ action: e.target.value as RuleAction })}>
           {(Object.keys(ACTION_LABEL) as RuleAction[]).map((a) => <option key={a} value={a}>{ACTION_LABEL[a]}</option>)}
         </select>
-        {rule.action === "score" && (
-          <div className="wt" style={{ flex: "1 1 200px" }}>
-            <input type="range" min={0} max={50} step={5} value={row.weight} onChange={(e) => onPatch({ weight: Number(e.target.value) })} aria-label={`Weight for ${row.name}`} />
-            <span className="mono">{scoreTotal && row.enabled ? Math.round((row.weight / scoreTotal) * 100) : 0}%</span>
-          </div>
-        )}
+        <div className="wt" style={{ flex: "1 1 220px" }} title="Share of the stage-1 score earned by passing this filter">
+          <span className="hint" style={{ margin: 0, whiteSpace: "nowrap" }}>Points when met</span>
+          <input type="range" min={0} max={50} step={5} value={row.weight} onChange={(e) => onPatch({ weight: Number(e.target.value) })} aria-label={`Points for ${row.name}`} />
+          <span className="mono">{scoreTotal && row.enabled ? Math.round((row.weight / scoreTotal) * 100) : 0}%</span>
+        </div>
       </div>
 
       {problem ? <p className="error-text" style={{ margin: 0 }}>{problem}</p> : <p className="hint" style={{ margin: 0 }}>{describeRule(rule)} → {ACTION_LABEL[rule.action].toLowerCase()}.</p>}

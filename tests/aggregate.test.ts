@@ -45,6 +45,14 @@ test("a failed flag-rule marks for review without rejecting", () => {
   assert.equal(r.score, 100);
 });
 
+test("stage 1: passed filters earn points; unclear earns half; stage 2 ignores them", () => {
+  const results = [soft(40, "not_met"), rule("reject", "pass", 30), rule("flag", "pass", 30)];
+  assert.equal(aggregate(results, 0.7, { filterPoints: true }).score, 60);
+  assert.equal(aggregate(results, 0.7).score, 0); // stage 2: filters don't score
+  assert.equal(aggregate([soft(50, "meets"), rule("flag", "unclear", 50)], 0.7, { filterPoints: true }).score, 75);
+  assert.equal(aggregate([rule("reject", "pass", 10)], 0.7, { filterPoints: true }).aiJudged, false);
+});
+
 test("score-rules add weighted points; rules don't lower AI confidence", () => {
   const r = aggregate([soft(50, "meets"), rule("score", "fail", 50)], 0.7);
   assert.equal(r.score, 50);

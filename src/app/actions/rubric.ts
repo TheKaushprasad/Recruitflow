@@ -99,7 +99,7 @@ export async function generateStage(jobId: string, stage: 1 | 2): Promise<Action
         if (validateRule(rule, questions)) { dropped++; continue; }
         filters.push({
           stage: 1, kind: "rule", name: f.name, description: describeRule(rule), rule,
-          weight: f.action === "score" ? 10 : 0, source_constraint: f.source_constraint,
+          weight: 10, source_constraint: f.source_constraint, // points when passed
         });
       }
       rows = [
