@@ -59,7 +59,8 @@ export function SetupForm({ job, questions, googleConnected, responses, aiName, 
     return r;
   }
 
-  const strip = () => qs.map(({ key: _k, ...q }) => { void _k; return q; });
+  // Send only the question fields (never database ids or owners).
+  const strip = () => qs.map(({ title, type, required, options, role }) => ({ title, type, required, options, role }));
 
   return (
     <>

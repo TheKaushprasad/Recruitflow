@@ -122,14 +122,35 @@ export async function saveQuestions(
   jobId: string,
   questions: Pick<FormQuestion, "title" | "type" | "required" | "options" | "role">[],
 ): Promise<ActionResult> {
-  const { supabase } = await requireUser();
-  if (questions.some((q) => !q.title.trim())) return { ok: false, error: "Every question needs text." };
-  const { error: delErr } = await supabase.from("form_questions").delete().eq("job_id", jobId);
-  if (delErr) return fail(delErr);
-  const { error } = await supabase
-    .from("form_questions")
-    .insert(questions.map((q, i) => ({ ...q, title: q.title.trim(), job_id: jobId, position: i })));
+  const { supabase, user } = await requireUser();
+  if (!questions.length) return { ok: false, error: "Add at least one question." };
+  if (questions.some((q) => !q.title?.trim())) return { ok: false, error: "Every question needs text." };
+  const { data: job } = await supabase.from("jobs").select("id").eq("id", jobId).maybeSingle();
+  if (!job) return { ok: false, error: "This job isn't in your account. If you switched Google or email accounts, sign in with the one that created it." };
+
+  const QTYPES = ["short", "paragraph", "choice", "dropdown", "checkbox", "date"];
+  const ROLES = ["name", "email", "resume", "portfolio", "github"];
+  // Only the question fields are taken from the browser — never ids or owners.
+  const rows = questions.map((q, i) => ({
+    job_id: jobId,
+    recruiter_id: user.id,
+    position: i,
+    title: q.title.trim(),
+    type: QTYPES.includes(q.type) ? q.type : "short",
+    required: Boolean(q.required),
+    options: Array.isArray(q.options) ? q.options.map((o) => String(o).trim()).filter(Boolean) : [],
+    role: q.role && ROLES.includes(q.role) ? q.role : null,
+  }));
+
+  // Insert the new set first, then remove the old one, so a failed save never leaves the form empty.
+  const { data: old } = await supabase.from("form_questions").select("id").eq("job_id", jobId);
+  const { error } = await supabase.from("form_questions").insert(rows);
   if (error) return fail(error);
+  const oldIds = (old ?? []).map((o) => o.id);
+  if (oldIds.length) {
+    const { error: delErr } = await supabase.from("form_questions").delete().in("id", oldIds);
+    if (delErr) return fail(delErr);
+  }
   revalidatePath(`/jobs/${jobId}/setup`);
   return { ok: true, message: "Questions saved" };
 }

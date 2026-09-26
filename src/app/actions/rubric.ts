@@ -185,15 +185,34 @@ export async function saveDraft(rubricId: string, patches: { id: string; patch: 
   for (const p of patches) if (p.patch.rule) p.patch.description = describeRule(p.patch.rule);
   for (const a of added) if (a.kind === "rule" && a.rule) a.description = describeRule(a.rule);
 
+  // Only known fields are taken from the browser — never ids, owners or rubric links.
+  const pick = (p: CriterionPatch) => {
+    const out: CriterionPatch = {};
+    if (p.name !== undefined) out.name = String(p.name).trim();
+    if (p.description !== undefined) out.description = String(p.description);
+    if (p.weight !== undefined) out.weight = Math.max(0, Math.min(100, Math.round(Number(p.weight) || 0)));
+    if (p.enabled !== undefined) out.enabled = Boolean(p.enabled);
+    if (p.rule !== undefined) out.rule = p.rule;
+    return out;
+  };
+  const { user } = await requireUser();
   for (const { id, patch } of patches) {
-    const { error } = await supabase.from("rubric_criteria").update(patch).eq("id", id).eq("rubric_id", rubricId);
+    const { error } = await supabase.from("rubric_criteria").update(pick(patch)).eq("id", id).eq("rubric_id", rubricId);
     if (error) return fail(error);
   }
   if (removed.length) await supabase.from("rubric_criteria").delete().in("id", removed).eq("rubric_id", rubricId);
   if (added.length) {
-    const { error } = await supabase
-      .from("rubric_criteria")
-      .insert(added.map((a, i) => ({ ...a, rule: a.kind === "rule" ? a.rule : null, rubric_id: rubricId, position: 500 + i })));
+    const { error } = await supabase.from("rubric_criteria").insert(
+      added.map((a, i) => ({
+        ...pick(a),
+        stage: a.stage === 2 ? 2 : 1,
+        kind: (["hard", "soft", "rule"] as const).includes(a.kind) ? a.kind : "soft",
+        rule: a.kind === "rule" ? a.rule : null,
+        rubric_id: rubricId,
+        recruiter_id: user.id,
+        position: 500 + i,
+      })),
+    );
     if (error) return fail(error);
   }
   await supabase.from("rubrics").update({ bias_reviewed: false, source: "recruiter" }).eq("id", rubricId);
