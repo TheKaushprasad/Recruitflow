@@ -5,30 +5,32 @@ import { after } from "next/server";
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { extractRubric } from "@/lib/ai/llm";
-import { activeProvider, PROVIDER_LABEL } from "@/lib/ai/provider";
+import { draftStage1, draftStage2 } from "@/lib/ai/llm";
 import { scorePending } from "@/lib/pipeline";
 import { getRuleQuestions } from "@/lib/data";
 import { describeRule, validateRule, type FormRule } from "@/lib/rules";
-import type { Criterion, Job, Rubric } from "@/lib/types";
+import type { Criterion, CriterionKind, Job } from "@/lib/types";
 import type { ActionResult } from "./jobs";
+
+type Db = Awaited<ReturnType<typeof requireUser>>["supabase"];
 
 function fail(e: unknown): ActionResult {
   return { ok: false, error: errorMessage(e) };
 }
 
-async function nextVersion(db: Awaited<ReturnType<typeof requireUser>>["supabase"], jobId: string) {
+async function nextVersion(db: Db, jobId: string) {
   const { data } = await db.from("rubrics").select("version").eq("job_id", jobId).order("version", { ascending: false }).limit(1);
   return (data?.[0]?.version ?? 0) + 1;
 }
 
-async function approve(db: Awaited<ReturnType<typeof requireUser>>["supabase"], job: Job, rubricId: string) {
+async function approve(db: Db, job: Job, rubricId: string) {
   if (job.current_rubric_id) {
     await db.from("rubrics").update({ status: "superseded" }).eq("id", job.current_rubric_id);
   }
   await db.from("rubrics").update({ status: "approved", approved_at: new Date().toISOString() }).eq("id", rubricId);
   await db.from("jobs").update({ current_rubric_id: rubricId }).eq("id", job.id);
-  // Every candidate lacks an evaluation on the new version, so this re-scores all of them.
+  // Everyone gets a stage-1 result on the new version. Unchanged AI items are reused, so this is
+  // instant and free when only filters, weights or the stage-2 rubric changed.
   after(async () => {
     const admin = createAdminClient();
     const { data: fresh } = await admin.from("jobs").select("*").eq("id", job.id).single<Job>();
@@ -41,88 +43,108 @@ async function approve(db: Awaited<ReturnType<typeof requireUser>>["supabase"], 
   });
 }
 
-/** The AI (Claude or OpenAI) drafts a rubric from the JD + constraints. Replaces any unapproved draft. */
-export async function generateRubric(jobId: string): Promise<ActionResult> {
+/** The draft to edit: the existing draft, or a new version copied from the approved rubric (or empty). */
+async function ensureDraft(db: Db, job: Job, source: "openai" | "recruiter", model: string | null) {
+  const { data: existing } = await db.from("rubrics").select("id").eq("job_id", job.id).eq("status", "draft").maybeSingle();
+  if (existing) {
+    if (source === "openai") await db.from("rubrics").update({ source, model }).eq("id", existing.id);
+    return existing.id as string;
+  }
+  const { data: rubric, error } = await db
+    .from("rubrics")
+    .insert({ job_id: job.id, version: await nextVersion(db, job.id), status: "draft", source, model })
+    .select("id")
+    .single();
+  if (error) throw new Error(error.message);
+  if (job.current_rubric_id) {
+    const { data: crit } = await db.from("rubric_criteria").select("*").eq("rubric_id", job.current_rubric_id);
+    if (crit?.length) {
+      await db.from("rubric_criteria").insert(
+        (crit as Criterion[]).map(({ id: _id, recruiter_id: _r, rubric_id: _rid, ...c }) => {
+          void _id; void _r; void _rid;
+          return { ...c, rubric_id: rubric.id };
+        }),
+      );
+    }
+  }
+  return rubric.id as string;
+}
+
+/**
+ * OpenAI drafts one stage of the rubric and replaces that stage in the draft; the other stage is kept.
+ * Stage 1: filters on form answers (exact or AI-checked) + criteria for free-text answers.
+ * Stage 2: criteria and must-haves for the CV / portfolio / GitHub review.
+ */
+export async function generateStage(jobId: string, stage: 1 | 2): Promise<ActionResult> {
   try {
     const { supabase } = await requireUser();
     const { data: job } = await supabase.from("jobs").select("*").eq("id", jobId).single<Job>();
     if (!job) return { ok: false, error: "Job not found." };
-    if (job.description.trim().length < 80)
-      return { ok: false, error: `Add a fuller job description first — ${PROVIDER_LABEL[activeProvider() ?? "claude"]} needs the responsibilities and requirements.` };
+    if (job.description.trim().length < 80) return { ok: false, error: "Add a fuller job description in Job setup first — OpenAI needs the responsibilities and requirements." };
 
-    const questions = await getRuleQuestions(supabase, jobId);
-    const { draft, model, provider } = await extractRubric({ ...job, questions });
-    await supabase.from("rubrics").delete().eq("job_id", jobId).eq("status", "draft");
-    const { data: rubric, error } = await supabase
-      .from("rubrics")
-      .insert({ job_id: jobId, version: await nextVersion(supabase, jobId), status: "draft", source: provider, model })
-      .select("*")
-      .single<Rubric>();
-    if (error) return fail(error);
-
-    // Suggested form rules are kept only if they check a real question correctly and fairly;
-    // anything else falls back to an AI-judged hard filter so the constraint isn't lost.
-    const ruleRows: Record<string, unknown>[] = [];
-    const fallbackFilters: typeof draft.hard_filters = [];
-    for (const s of draft.form_rules) {
-      const rule: FormRule = {
-        question: questions.find((q) => q.title.trim().toLowerCase() === s.question.trim().toLowerCase())?.title ?? s.question,
-        op: s.op, value: s.value, value2: s.value2, options: s.options, date: s.date, action: s.action,
-      };
-      if (validateRule(rule, questions)) {
-        fallbackFilters.push({ name: s.name, description: `Check from the application: ${s.source_constraint}`, source_constraint: s.source_constraint });
-      } else {
-        ruleRows.push({
-          rubric_id: rubric.id, position: ruleRows.length, kind: "rule", name: s.name, description: describeRule(rule),
-          weight: rule.action === "score" ? 10 : 0, source_constraint: s.source_constraint, rule,
+    let rows: Record<string, unknown>[];
+    let model: string;
+    let dropped = 0;
+    if (stage === 1) {
+      const questions = await getRuleQuestions(supabase, jobId);
+      if (!questions.length) return { ok: false, error: "Add form questions in Job setup first — stage 1 screens their answers." };
+      const res = await draftStage1({ ...job, questions });
+      model = res.model;
+      const filters: Record<string, unknown>[] = [];
+      for (const f of res.draft.filters) {
+        const rule: FormRule = {
+          question: questions.find((q) => q.title.trim().toLowerCase() === f.question.trim().toLowerCase())?.title ?? f.question,
+          op: f.op, value: f.value, value2: f.value2, options: f.options, date: f.date, instruction: f.instruction, action: f.action,
+        };
+        if (validateRule(rule, questions)) { dropped++; continue; }
+        filters.push({
+          stage: 1, kind: "rule", name: f.name, description: describeRule(rule), rule,
+          weight: f.action === "score" ? 10 : 0, source_constraint: f.source_constraint,
         });
       }
+      rows = [
+        ...filters,
+        ...res.draft.criteria.map((c) => ({ stage: 1, kind: "soft", name: c.name, description: c.description, weight: c.weight, bias_flag: c.bias_flag })),
+      ];
+    } else {
+      const res = await draftStage2(job);
+      model = res.model;
+      rows = [
+        ...res.draft.must_haves.map((h) => ({ stage: 2, kind: "hard", name: h.name, description: h.description, weight: 0, source_constraint: h.source_constraint })),
+        ...res.draft.criteria.map((c) => ({ stage: 2, kind: "soft", name: c.name, description: c.description, weight: c.weight, bias_flag: c.bias_flag })),
+      ];
     }
 
-    const rows = [
-      ...ruleRows,
-      ...[...draft.hard_filters, ...fallbackFilters].map((h, i) => ({
-        rubric_id: rubric.id, position: 50 + i, kind: "hard", name: h.name, description: h.description,
-        weight: 0, source_constraint: h.source_constraint,
-      })),
-      ...draft.criteria.map((c, i) => ({
-        rubric_id: rubric.id, position: 100 + i, kind: "soft", name: c.name, description: c.description,
-        weight: c.weight, bias_flag: c.bias_flag,
-      })),
-    ];
-    const { error: cErr } = await supabase.from("rubric_criteria").insert(rows);
-    if (cErr) return fail(cErr);
+    const rubricId = await ensureDraft(supabase, job, "openai", model);
+    await supabase.from("rubric_criteria").delete().eq("rubric_id", rubricId).eq("stage", stage);
+    const { error } = await supabase
+      .from("rubric_criteria")
+      .insert(rows.map((r, i) => ({ ...r, rubric_id: rubricId, position: i })));
+    if (error) return fail(error);
+    await supabase.from("rubrics").update({ bias_reviewed: false }).eq("id", rubricId);
 
-    if (!job.require_signoff) await approve(supabase, job, rubric.id);
     revalidatePath(`/jobs/${jobId}`, "layout");
-    return { ok: true, message: job.require_signoff ? "Draft rubric ready — review it before scoring starts." : "Rubric generated and applied." };
+    return {
+      ok: true,
+      message: `Stage ${stage} drafted with OpenAI — review it, then approve.${dropped ? ` ${dropped} suggested filter${dropped === 1 ? " was" : "s were"} skipped (didn't match a form question or failed the fairness check).` : ""}`,
+    };
   } catch (e) {
     return fail(e);
   }
 }
 
-/** Starts editing: copies the approved rubric into a new draft version. */
+/** Starts editing: a new draft version copied from the approved rubric (or an empty one). */
 export async function editRubric(jobId: string): Promise<ActionResult> {
-  const { supabase } = await requireUser();
-  const { data: job } = await supabase.from("jobs").select("*").eq("id", jobId).single<Job>();
-  if (!job?.current_rubric_id) return { ok: false, error: "There's no approved rubric to edit yet." };
-  const { data: existing } = await supabase.from("rubrics").select("id").eq("job_id", jobId).eq("status", "draft").maybeSingle();
-  if (existing) return { ok: true };
-  const { data: crit } = await supabase.from("rubric_criteria").select("*").eq("rubric_id", job.current_rubric_id);
-  const { data: rubric, error } = await supabase
-    .from("rubrics")
-    .insert({ job_id: jobId, version: await nextVersion(supabase, jobId), status: "draft", source: "recruiter" })
-    .select("id")
-    .single();
-  if (error) return fail(error);
-  await supabase.from("rubric_criteria").insert(
-    ((crit ?? []) as Criterion[]).map(({ id: _id, recruiter_id: _r, rubric_id: _rid, ...c }) => {
-      void _id; void _r; void _rid;
-      return { ...c, rubric_id: rubric.id };
-    }),
-  );
-  revalidatePath(`/jobs/${jobId}/rubric`);
-  return { ok: true };
+  try {
+    const { supabase } = await requireUser();
+    const { data: job } = await supabase.from("jobs").select("*").eq("id", jobId).single<Job>();
+    if (!job) return { ok: false, error: "Job not found." };
+    await ensureDraft(supabase, job, "recruiter", null);
+    revalidatePath(`/jobs/${jobId}`, "layout");
+    return { ok: true };
+  } catch (e) {
+    return fail(e);
+  }
 }
 
 export async function discardDraft(jobId: string): Promise<ActionResult> {
@@ -132,29 +154,36 @@ export async function discardDraft(jobId: string): Promise<ActionResult> {
   return { ok: true, message: "Draft discarded" };
 }
 
-type CriterionPatch = Partial<Pick<Criterion, "name" | "description" | "weight" | "enabled" | "rule">>;
+type CriterionPatch = Partial<Pick<Criterion, "name" | "description" | "weight" | "enabled" | "rule" | "kind">>;
+export interface NewCriterion {
+  stage: 1 | 2;
+  kind: CriterionKind;
+  name: string;
+  description: string;
+  weight: number;
+  rule?: FormRule | null;
+}
 
-/** Saves all criterion and form-rule edits on a draft rubric in one go. */
-export async function saveDraft(
-  rubricId: string,
-  patches: { id: string; patch: CriterionPatch }[],
-  added: { kind: "soft" | "rule"; name: string; description: string; weight: number; rule?: FormRule | null }[],
-  removed: string[],
-): Promise<ActionResult> {
+/** Saves all edits to a draft in one go: changed items, new items and deletions, for both stages. */
+export async function saveDraft(rubricId: string, patches: { id: string; patch: CriterionPatch }[], added: NewCriterion[], removed: string[]): Promise<ActionResult> {
   const { supabase } = await requireUser();
   const { data: rubric } = await supabase.from("rubrics").select("status, job_id").eq("id", rubricId).single();
-  if (rubric?.status !== "draft") return { ok: false, error: "Only draft rubrics can be edited. Click “Edit rubric” to start a new version." };
+  if (rubric?.status !== "draft") return { ok: false, error: "Only draft rubrics can be edited. Click “Edit” to start a new version." };
 
-  // Form rules are validated here too — the editor's checks are a convenience, not a guarantee.
+  for (const x of [...patches.map((p) => p.patch), ...added]) {
+    if ("name" in x && x.name !== undefined && !x.name.trim()) return { ok: false, error: "Every filter and criterion needs a name." };
+  }
+  // Filters are validated here too — the editor's checks are a convenience, not a guarantee.
   const questions = await getRuleQuestions(supabase, rubric.job_id);
   for (const r of [...patches.map((p) => p.patch.rule), ...added.map((a) => a.rule)]) {
     if (!r) continue;
     const problem = validateRule(r, questions);
     if (problem) return { ok: false, error: problem };
   }
+  if (added.some((a) => a.kind === "rule" && !a.rule)) return { ok: false, error: "A filter is missing its settings." };
+  if (added.some((a) => a.kind === "rule" && a.stage !== 1)) return { ok: false, error: "Filters on form answers belong to stage 1." };
   for (const p of patches) if (p.patch.rule) p.patch.description = describeRule(p.patch.rule);
   for (const a of added) if (a.kind === "rule" && a.rule) a.description = describeRule(a.rule);
-  if (added.some((a) => a.kind === "rule" && !a.rule)) return { ok: false, error: "A form rule is missing its settings." };
 
   for (const { id, patch } of patches) {
     const { error } = await supabase.from("rubric_criteria").update(patch).eq("id", id).eq("rubric_id", rubricId);
@@ -164,10 +193,10 @@ export async function saveDraft(
   if (added.length) {
     const { error } = await supabase
       .from("rubric_criteria")
-      .insert(added.map((a, i) => ({ ...a, rubric_id: rubricId, position: 500 + i })));
+      .insert(added.map((a, i) => ({ ...a, rule: a.kind === "rule" ? a.rule : null, rubric_id: rubricId, position: 500 + i })));
     if (error) return fail(error);
   }
-  await supabase.from("rubrics").update({ bias_reviewed: false }).eq("id", rubricId);
+  await supabase.from("rubrics").update({ bias_reviewed: false, source: "recruiter" }).eq("id", rubricId);
   revalidatePath(`/jobs/${rubric.job_id}/rubric`);
   return { ok: true, message: "Draft saved" };
 }
@@ -176,21 +205,20 @@ export async function approveRubric(rubricId: string, biasReviewed: boolean): Pr
   try {
     const { supabase } = await requireUser();
     if (!biasReviewed) return { ok: false, error: "Confirm the bias review before approving." };
-    const { data: rubric } = await supabase.from("rubrics").select("*, rubric_criteria(kind, weight, enabled, rule, name)").eq("id", rubricId).single();
+    const { data: rubric } = await supabase.from("rubrics").select("*, rubric_criteria(kind, weight, enabled, rule, name, stage)").eq("id", rubricId).single();
     if (!rubric || rubric.status !== "draft") return { ok: false, error: "This rubric isn't a draft." };
     const crit = (rubric.rubric_criteria as Criterion[]).filter((c) => c.enabled);
-    const scored = crit.filter((c) => c.kind === "soft" || (c.kind === "rule" && c.rule?.action === "score"));
-    if (!scored.length || scored.every((c) => c.weight === 0)) return { ok: false, error: "Give at least one scored criterion a weight above zero." };
+    if (!crit.some((c) => c.stage === 1)) return { ok: false, error: "Stage 1 needs at least one filter or criterion — it's how every applicant is screened." };
     const questions = await getRuleQuestions(supabase, rubric.job_id);
     for (const c of crit.filter((c) => c.kind === "rule" && c.rule)) {
       const problem = validateRule(c.rule!, questions);
-      if (problem) return { ok: false, error: `Form rule “${c.name}”: ${problem}` };
+      if (problem) return { ok: false, error: `Filter “${c.name}”: ${problem}` };
     }
     const { data: job } = await supabase.from("jobs").select("*").eq("id", rubric.job_id).single<Job>();
     await supabase.from("rubrics").update({ bias_reviewed: true }).eq("id", rubricId);
     await approve(supabase, job!, rubricId);
     revalidatePath(`/jobs/${rubric.job_id}`, "layout");
-    return { ok: true, message: `Rubric v${rubric.version} approved. Re-scoring every candidate in the background.` };
+    return { ok: true, message: `Rubric v${rubric.version} approved. Stage-1 results update in the background.` };
   } catch (e) {
     return fail(e);
   }
@@ -198,11 +226,7 @@ export async function approveRubric(rubricId: string, biasReviewed: boolean): Pr
 
 export async function retryScoring(candidateIds: string[]): Promise<ActionResult> {
   const { supabase } = await requireUser();
-  const { data } = await supabase
-    .from("candidates")
-    .update({ score_status: "pending", score_error: null })
-    .in("id", candidateIds)
-    .select("job_id");
+  const { data } = await supabase.from("candidates").update({ score_status: "pending", score_error: null }).in("id", candidateIds).select("job_id");
   const jobId = data?.[0]?.job_id;
   if (jobId) {
     after(async () => {

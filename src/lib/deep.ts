@@ -4,12 +4,12 @@ import { deepEvaluate } from "./ai/llm";
 import { aggregate } from "./aggregate";
 import { errorMessage } from "./errors";
 import { readCv, readGitHub, readPortfolio } from "./sources";
-import { applyRules } from "./scoring";
 import type { Candidate, Criterion, CriterionResult, DeepResult, Job } from "./types";
 
 /**
- * Stage 2: reads the candidate's CV, portfolio and GitHub, then re-judges every
- * rubric criterion with the AI using all materials plus the form answers.
+ * Stage 2 (after the recruiter moves a candidate on): reads their CV, portfolio and GitHub,
+ * then judges every stage-2 criterion using the JD plus all materials and the form answers.
+ * Stage-1 filter results carry over, so a failed "reject" filter still disqualifies.
  * Runs with the service-role client; every query is scoped by ids from the row.
  */
 export async function runDeepEvaluation(db: SupabaseClient, evaluationId: string) {
@@ -22,22 +22,29 @@ export async function runDeepEvaluation(db: SupabaseClient, evaluationId: string
       db.from("jobs").select("*").eq("id", row.job_id).single<Job>(),
       db.from("candidates").select("*").eq("id", row.candidate_id).single<Candidate>(),
       db.from("rubric_criteria").select("*").eq("rubric_id", row.rubric_id).eq("enabled", true).order("position"),
-      db.from("evaluations").select("criterion_results(*)").eq("candidate_id", row.candidate_id).eq("rubric_id", row.rubric_id).maybeSingle(),
+      db.from("evaluations").select("reason, score, criterion_results(*)").eq("candidate_id", row.candidate_id).eq("rubric_id", row.rubric_id).maybeSingle(),
     ]);
     if (!job || !cand) throw new Error("Candidate or job no longer exists.");
     const all = (crit ?? []) as Criterion[];
-    if (!all.length) throw new Error("The rubric has no enabled criteria.");
-    // Form rules are exact checks — re-applied here, never re-judged by the AI.
-    const rules = all.filter((c) => c.kind === "rule" && c.rule);
-    const criteria = all.filter((c) => c.kind !== "rule");
-    const ruleFinals = applyRules(rules, cand.answers);
-    const s1 = new Map(((stage1?.criterion_results ?? []) as CriterionResult[]).map((r) => [r.criterion_id, r]));
 
-    const [cv, portfolio, github] = await Promise.all([
-      readCv(cand.resume_url),
-      readPortfolio(cand.portfolio_url),
-      readGitHub(cand.github_url),
-    ]);
+    // Stage-2 rubric; until one is generated, fall back to the stage-1 AI criteria.
+    let criteria = all.filter((c) => c.stage === 2 && c.kind !== "rule");
+    const usingFallback = !criteria.length;
+    if (usingFallback) criteria = all.filter((c) => c.stage === 1 && c.kind !== "rule");
+    if (!criteria.length) throw new Error("There's no stage-2 rubric yet. Generate one on the Rubric tab.");
+
+    // Stage-1 results for this candidate, as context and for carried-over filters.
+    const byId = new Map(all.map((c) => [c.id, c]));
+    const s1 = ((stage1?.criterion_results ?? []) as CriterionResult[])
+      .map((r) => ({ r, c: byId.get(r.criterion_id) }))
+      .filter((x): x is { r: CriterionResult; c: Criterion } => !!x.c);
+    const label = (d: string) => (d === "pass" || d === "meets" ? "met" : d === "fail" || d === "not_met" ? "NOT met" : d === "borderline" ? "partly met" : "unclear");
+    const stage1Facts = [
+      ...(stage1 ? [`Stage-1 form score: ${stage1.score}. ${stage1.reason}`] : []),
+      ...s1.map(({ r, c }) => `${c.kind === "rule" ? "Filter" : "Form criterion"} “${c.name}” — ${label(r.decision)}: ${r.evidence}`),
+    ];
+
+    const [cv, portfolio, github] = await Promise.all([readCv(cand.resume_url), readPortfolio(cand.portfolio_url), readGitHub(cand.github_url)]);
     const sources = [cv, portfolio, github].map(({ kind, url, status, note }) => ({ kind, url, status, note }));
     if (![cv, portfolio, github].some((s) => s.status === "read")) {
       throw new Error(
@@ -51,11 +58,8 @@ export async function runDeepEvaluation(db: SupabaseClient, evaluationId: string
       jobTitle: job.title,
       jobDescription: job.description,
       constraints: job.constraints,
-      criteria: criteria.map((c, i) => {
-        const r = s1.get(c.id);
-        return { key: keyOf(i), kind: c.kind as "hard" | "soft", name: c.name, description: c.description, stage1: r ? { decision: r.decision, evidence: r.evidence } : undefined };
-      }),
-      ruleFacts: ruleFinals.map((f) => `${f.criterion.name} — ${f.decision === "pass" ? "met" : f.decision === "fail" ? "NOT met" : "unclear"}: ${f.evidence}`),
+      criteria: criteria.map((c, i) => ({ key: keyOf(i), kind: c.kind as "hard" | "soft", name: c.name, description: c.description })),
+      stage1Facts,
       answers: cand.answers,
       cv: cv.status === "read" ? { pdfBase64: cv.pdfBase64, text: cv.text } : null,
       portfolioText: portfolio.status === "read" ? portfolio.text ?? null : null,
@@ -63,11 +67,14 @@ export async function runDeepEvaluation(db: SupabaseClient, evaluationId: string
     });
 
     const byKey = new Map(output.results.map((r) => [r.key, r]));
-    const ruleResults: DeepResult[] = ruleFinals.map((f) => ({
-      criterion_id: f.criterion.id, name: f.criterion.name, kind: "rule", action: f.criterion.rule!.action,
-      weight: f.criterion.weight, decision: f.decision, confidence: f.confidence, evidence: f.evidence, sources: ["form"],
-    }));
-    const aiResults: DeepResult[] = criteria.map((c, i) => {
+    // Carry over stage-1 reject/flag filters (not score filters — the stage-2 score is stage-2 criteria only).
+    const carried: DeepResult[] = s1
+      .filter(({ c }) => c.kind === "rule" && c.rule && c.rule.action !== "score")
+      .map(({ r, c }) => ({
+        criterion_id: c.id, name: c.name, kind: "rule", action: c.rule!.action, weight: 0,
+        decision: r.decision, confidence: Number(r.confidence), evidence: r.evidence, sources: ["form"],
+      }));
+    const judged: DeepResult[] = criteria.map((c, i) => {
       const r = byKey.get(keyOf(i));
       const allowed = c.kind === "hard" ? ["pass", "fail", "unclear"] : ["meets", "borderline", "not_met"];
       const decision = r && allowed.includes(r.decision) ? r.decision : c.kind === "hard" ? "unclear" : "borderline";
@@ -78,7 +85,7 @@ export async function runDeepEvaluation(db: SupabaseClient, evaluationId: string
         sources: [...new Set(r?.sources ?? [])],
       };
     });
-    const results = [...ruleResults, ...aiResults];
+    const results = [...carried, ...judged];
     const agg = aggregate(
       results.map((r) => ({ kind: r.kind, action: r.action, weight: r.weight, decision: r.decision, confidence: r.confidence })),
       Number(job.recheck_threshold),
@@ -90,7 +97,7 @@ export async function runDeepEvaluation(db: SupabaseClient, evaluationId: string
       confidence: Math.round(agg.confidence * 1000) / 1000,
       disqualified: agg.disqualified,
       verdict: output.verdict,
-      summary: output.summary,
+      summary: usingFallback ? `${output.summary} (Judged on the stage-1 criteria — no stage-2 rubric yet.)` : output.summary,
       strengths: output.strengths.slice(0, 5),
       concerns: output.concerns.slice(0, 5),
       interview_questions: output.interview_questions.slice(0, 5),

@@ -13,6 +13,5 @@ export const env = {
   googleClientSecret: () => required("GOOGLE_CLIENT_SECRET"),
   tokenKey: () => required("TOKEN_ENCRYPTION_KEY"),
   cronSecret: () => required("CRON_SECRET"),
-  claudeModel: () => process.env.CLAUDE_MODEL ?? "claude-opus-5",
   jevConfigured: () => Boolean(process.env.TYPESAFE_API_KEY),
 };

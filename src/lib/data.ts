@@ -26,8 +26,8 @@ export type CandidateRow = Candidate & {
   deep: DeepEvaluation | null;
   /** true when that deep evaluation used an older rubric version */
   deepStale: boolean;
-  /** Stage-1 result puts them on the shortlist for deep evaluation */
-  shortlisted: boolean;
+  /** The recruiter moved them to stage 2 (CV review) */
+  inStage2: boolean;
 };
 
 export async function getJob(db: SupabaseClient, jobId: string) {
@@ -56,10 +56,10 @@ export async function getRubrics(db: SupabaseClient, job: Job) {
  */
 export async function getRuleQuestions(db: SupabaseClient, jobId: string): Promise<RuleQuestion[]> {
   const [{ data: qs }, { data: cands }] = await Promise.all([
-    db.from("form_questions").select("title, type, options").eq("job_id", jobId).order("position"),
+    db.from("form_questions").select("title, type, options, role").eq("job_id", jobId).order("position"),
     db.from("candidates").select("answers").eq("job_id", jobId).limit(50),
   ]);
-  const out: RuleQuestion[] = (qs ?? []).map((q) => ({ title: q.title, type: q.type, options: q.options ?? [] }));
+  const out: RuleQuestion[] = (qs ?? []).map((q) => ({ title: q.title, type: q.type, options: q.options ?? [], role: q.role }));
   const seen = new Set(out.map((q) => q.title.trim().toLowerCase()));
   for (const c of cands ?? []) {
     for (const a of (c.answers ?? []) as { question: string }[]) {
@@ -89,7 +89,6 @@ export async function getCandidates(db: SupabaseClient, job: Job): Promise<Candi
     .from("candidates")
     .select("*, evaluations(*, criterion_results(*)), deep_evaluations(*)")
     .eq("job_id", job.id);
-  const threshold = Number(job.shortlist_threshold ?? 60);
   const rows = ((data ?? []) as (Candidate & { evaluations: EvaluationWithResults[]; deep_evaluations: DeepEvaluation[] })[]).map((c) => {
     const evs = [...c.evaluations].sort((a, b) => b.created_at.localeCompare(a.created_at));
     const current = evs.find((e) => e.rubric_id === job.current_rubric_id) ?? null;
@@ -97,8 +96,6 @@ export async function getCandidates(db: SupabaseClient, job: Job): Promise<Candi
     const deep = [...c.deep_evaluations].sort((a, b) => b.created_at.localeCompare(a.created_at))[0] ?? null;
     const { evaluations: _omit, deep_evaluations: _omit2, ...rest } = c;
     void _omit; void _omit2;
-    const shortlisted =
-      !!current && !current.disqualified && (current.score >= threshold || current.needs_review);
     return {
       ...rest,
       evaluation,
@@ -106,7 +103,7 @@ export async function getCandidates(db: SupabaseClient, job: Job): Promise<Candi
       rank: null as number | null,
       deep,
       deepStale: !!deep && deep.rubric_id !== job.current_rubric_id,
-      shortlisted,
+      inStage2: !!c.stage2_at,
     };
   });
 

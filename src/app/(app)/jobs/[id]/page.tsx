@@ -38,7 +38,7 @@ export default async function JobOverview({ params }: PageProps<"/jobs/[id]">) {
   const hasForm = Boolean(job.google_form_id || job.sheet_id);
   const calStages = new Set(stages.filter((s) => s.prompt_calendar).map((s) => s.id));
   const threshold = Number(job.recheck_threshold);
-  const ai = PROVIDER_LABEL[activeProvider() ?? "claude"];
+  const ai = PROVIDER_LABEL[activeProvider() ?? "openai"];
 
   const attn: { sev?: "bad"; title: string; detail: string; href: string; cta: string }[] = [];
   if (!job.description.trim()) attn.push({ title: "Add the job description", detail: `${ai} builds the scoring rubric from it.`, href: `${base}/setup`, cta: "Open job setup" });

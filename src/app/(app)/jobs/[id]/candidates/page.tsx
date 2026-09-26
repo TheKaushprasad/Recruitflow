@@ -30,7 +30,7 @@ export default async function CandidatesPage({ params, searchParams }: PageProps
       templates={templates}
       initialFilter={typeof sp.f === "string" ? sp.f : "all"}
       openId={typeof sp.c === "string" ? sp.c : null}
-      aiName={PROVIDER_LABEL[activeProvider() ?? "claude"]}
+      aiName={PROVIDER_LABEL[activeProvider() ?? "openai"]}
     />
   );
 }

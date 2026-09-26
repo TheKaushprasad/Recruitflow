@@ -14,10 +14,18 @@ export interface RuleRow {
 
 const ACTION_CHIP: Record<RuleAction, string> = { reject: "bad", flag: "warn", score: "good" };
 
-export function newRule(questions: RuleQuestion[]): FormRule {
-  const q = questions.find((x) => /experience/i.test(x.title)) ?? questions[0];
-  const ops = opsFor(q?.type);
-  return { question: q?.title ?? "", op: ops[0], value: ops[0] === "gte" ? 3 : null, value2: null, options: [], date: null, action: "reject" };
+/** Questions worth filtering on: not identity/link questions, not long open-ended answers. */
+export function filterableQuestions(questions: RuleQuestion[]) {
+  return questions.filter(
+    (q) => !q.role && q.type !== "paragraph" && !/\b(name|e-?mail|phone|mobile|resume|\bcv\b|portfolio|github|linkedin|website)\b/i.test(q.title),
+  );
+}
+
+/** A sensible starting filter for a question: exact for structured answers, AI check for free text. */
+export function newRule(questions: RuleQuestion[], title?: string): FormRule {
+  const q = (title ? questions.find((x) => x.title === title) : undefined) ?? filterableQuestions(questions)[0] ?? questions[0];
+  const op = opsFor(q?.type)[0];
+  return { question: q?.title ?? "", op, value: op === "gte" ? 3 : null, value2: null, options: [], date: null, instruction: "", action: "reject" };
 }
 
 export function FormRulesEditor({ rows, editable, questions, scoreTotal, onPatch, onRemove, onAdd }: {
@@ -28,21 +36,38 @@ export function FormRulesEditor({ rows, editable, questions, scoreTotal, onPatch
   scoreTotal: number;
   onPatch: (id: string, p: Partial<RuleRow>) => void;
   onRemove: (id: string) => void;
-  onAdd: () => void;
+  /** add a filter, optionally for a specific question */
+  onAdd: (question?: string) => void;
 }) {
+  const covered = new Set(rows.map((r) => r.rule?.question.trim().toLowerCase()));
+  const suggestions = filterableQuestions(questions).filter((q) => !covered.has(q.title.trim().toLowerCase()));
   return (
     <div className="panel">
       <div className="section-head" style={{ marginBottom: 6 }}>
-        <h3>Form rules</h3>
-        <span className="muted" style={{ fontSize: 13 }}>Checked exactly against form answers — no AI</span>
+        <h3>Filters on form answers</h3>
+        <span className="muted" style={{ fontSize: 13 }}>Exact checks, or an AI check for free-text answers</span>
       </div>
       <p className="hint" style={{ margin: "0 0 10px" }}>
-        Applied the moment a response arrives, before any AI scoring. Blank or unreadable answers are flagged for review, never rejected.
+        Dropdowns, numbers and dates are checked exactly in code. Free-text answers (“Bangalore / BLR”, “12L”) use an AI check against the requirement you write.
+        Blank or unclear answers are flagged for review, never rejected.
       </p>
+
+      {editable && suggestions.length > 0 && (
+        <div className="status-box" style={{ margin: "0 0 12px" }}>
+          <b style={{ fontSize: 13.5 }}>Form questions without a filter</b>
+          <div className="row" style={{ gap: 6 }}>
+            {suggestions.map((q) => (
+              <button key={q.title} type="button" className="pillbtn btn-ghost btn-sm" onClick={() => onAdd(q.title)}>
+                + {q.title} <span className="muted" style={{ fontWeight: 400 }}>· {q.type === "short" ? "free text → AI check" : "exact"}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {rows.length === 0 && (
         <p className="muted" style={{ fontSize: 14 }}>
-          No form rules. {editable ? "Add one to screen on a form answer, e.g. years of experience at least 3." : "Start a new version to add some."}
+          No filters. {editable ? "Add one from the suggestions above, or with “+ Add filter”." : "Click Edit to add some."}
         </p>
       )}
 
@@ -65,9 +90,9 @@ export function FormRulesEditor({ rows, editable, questions, scoreTotal, onPatch
       )}
 
       {editable && (
-        <button className="pillbtn btn-ghost btn-sm" style={{ marginTop: 12 }} onClick={onAdd} disabled={!questions.length}
+        <button className="pillbtn btn-ghost btn-sm" style={{ marginTop: 12 }} onClick={() => onAdd()} disabled={!questions.length}
           title={!questions.length ? "Add form questions in Job setup first" : undefined}>
-          + Add form rule
+          + Add filter
         </button>
       )}
     </div>
@@ -88,6 +113,7 @@ function RuleEditorRow({ row, questions, scoreTotal, onPatch, onRemove }: {
   const problem = validateRule(rule, questions);
   const id = row.id;
   const needsNumber = rule.op === "gte" || rule.op === "lte" || rule.op === "between";
+  const isAi = rule.op === "ai";
   const needsOptions = ["in", "not_in", "includes_any", "includes_all"].includes(rule.op);
   const needsDate = rule.op === "date_before" || rule.op === "date_after";
   const chosen = new Set((rule.options ?? []).map((o) => o.trim().toLowerCase()));
@@ -128,6 +154,12 @@ function RuleEditorRow({ row, questions, scoreTotal, onPatch, onRemove }: {
           <input type="date" id={`rd-${id}`} aria-label="Date" value={rule.date ?? ""} style={{ flex: "0 1 170px" }} onChange={(e) => setRule({ date: e.target.value || null })} />
         )}
       </div>
+
+      {isAi && (
+        <textarea id={`ri-${id}`} rows={2} aria-label="Requirement for the AI to check" value={rule.instruction ?? ""}
+          placeholder={/ctc|salary|pay/i.test(rule.question) ? "e.g. Expected CTC at most 25 LPA; treat “negotiable” as unclear" : /city|location/i.test(rule.question) ? "e.g. Based in Bengaluru, or willing to relocate to Bengaluru" : "Describe what an acceptable answer looks like"}
+          onChange={(e) => setRule({ instruction: e.target.value })} style={{ fontSize: 13.5 }} />
+      )}
 
       {needsOptions && (
         q?.options.length ? (

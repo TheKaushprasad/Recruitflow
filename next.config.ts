@@ -6,7 +6,7 @@ import type { NextConfig } from "next";
 const PUBLIC_AT_BUILD = ["NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY"];
 const SERVER_AT_RUNTIME = [
   "SUPABASE_SERVICE_ROLE_KEY", "APP_URL", "TOKEN_ENCRYPTION_KEY", "CRON_SECRET",
-  "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "AI_PROVIDER", "OPENAI_API_KEY", "TYPESAFE_API_KEY",
+  "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "OPENAI_API_KEY", "OPENAI_MODEL", "TYPESAFE_API_KEY",
 ];
 if (process.env.VERCEL || process.env.CI) {
   const status = (k: string) => `${k}=${process.env[k]?.trim() ? "set" : "MISSING"}`;

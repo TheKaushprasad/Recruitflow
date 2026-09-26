@@ -12,7 +12,7 @@ import type { ActionResult } from "./jobs";
 
 const MAX_PER_RUN = 10;
 
-/** Stage 2, started by the recruiter: CV + portfolio + GitHub against the JD and rubric. */
+/** Runs (or re-runs) the stage-2 evaluation: CV + portfolio + GitHub against the JD and stage-2 rubric. */
 export async function startDeepEvaluation(jobId: string, candidateIds: string[]): Promise<ActionResult> {
   try {
     const { supabase } = await requireUser();
@@ -55,6 +55,42 @@ export async function startDeepEvaluation(jobId: string, candidateIds: string[])
   } catch (e) {
     return { ok: false, error: errorMessage(e) };
   }
+}
+
+/**
+ * The recruiter moves candidates to stage 2 (after reading their stage-1 result).
+ * That starts the CV + portfolio + GitHub evaluation for everyone with at least one link.
+ */
+export async function moveToStage2(jobId: string, candidateIds: string[]): Promise<ActionResult> {
+  try {
+    const { supabase } = await requireUser();
+    if (!candidateIds.length) return { ok: false, error: "Select at least one candidate." };
+    if (candidateIds.length > MAX_PER_RUN) return { ok: false, error: `Move up to ${MAX_PER_RUN} candidates at a time — each one is evaluated right away.` };
+    const { data: moved, error } = await supabase
+      .from("candidates")
+      .update({ stage2_at: new Date().toISOString() })
+      .in("id", candidateIds)
+      .eq("job_id", jobId)
+      .is("stage2_at", null)
+      .select("id");
+    if (error) return { ok: false, error: errorMessage(error) };
+    const eval_ = await startDeepEvaluation(jobId, candidateIds);
+    revalidatePath(`/jobs/${jobId}`, "layout");
+    const n = moved?.length ?? 0;
+    const head = n ? `Moved ${n} to stage 2.` : "Already in stage 2.";
+    return eval_.ok ? { ok: true, message: `${head} ${eval_.message ?? ""}`.trim() } : { ok: true, message: `${head} ${eval_.error}` };
+  } catch (e) {
+    return { ok: false, error: errorMessage(e) };
+  }
+}
+
+/** Sends candidates back to stage 1. Their stage-2 evaluations are kept for the record. */
+export async function removeFromStage2(jobId: string, candidateIds: string[]): Promise<ActionResult> {
+  const { supabase } = await requireUser();
+  const { error } = await supabase.from("candidates").update({ stage2_at: null }).in("id", candidateIds).eq("job_id", jobId);
+  if (error) return { ok: false, error: errorMessage(error) };
+  revalidatePath(`/jobs/${jobId}`, "layout");
+  return { ok: true, message: "Moved back to stage 1." };
 }
 
 /** Recruiter edits a candidate's CV / portfolio / GitHub links before evaluating. */

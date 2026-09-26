@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { answerFor, checkRule, describeRule, parseRange, validateRule, type FormRule } from "../src/lib/rules.ts";
+import { answerFor, checkRule, describeRule, parseLakhs, parseRange, validateRule, type FormRule } from "../src/lib/rules.ts";
 
 const r = (p: Partial<FormRule>): FormRule => ({ question: "Years of experience", op: "gte", value: 3, action: "reject", ...p });
 
@@ -73,6 +73,28 @@ test("validateRule catches unknown questions, bad options and age proxies", () =
   assert.match(validateRule(r({ question: "Notice period", op: "in", options: ["90 days"] }), qs)!, /isn't one of/);
   assert.equal(validateRule(r({ question: "Notice period", op: "in", options: ["immediate", "30 days"] }), qs), null);
   assert.match(validateRule(r({ value: null }), qs)!, /Enter a number/);
+});
+
+test("parseLakhs reads Indian pay figures as LPA", () => {
+  assert.deepEqual(parseLakhs("12 LPA"), [12, 12]);
+  assert.deepEqual(parseLakhs("12L"), [12, 12]);
+  assert.deepEqual(parseLakhs("₹15 lakhs"), [15, 15]);
+  assert.deepEqual(parseLakhs("12,00,000"), [12, 12]);
+  assert.deepEqual(parseLakhs("1.2 Cr"), [120, 120]);
+  assert.deepEqual(parseLakhs("12-15 LPA"), [12, 15]);
+  assert.equal(parseLakhs("negotiable"), null);
+});
+
+test("CTC rules compare in lakhs; AI filters need a written requirement", () => {
+  const ctc = r({ question: "Expected CTC", op: "lte", value: 25 });
+  assert.equal(checkRule(ctc, "18 LPA").outcome, "pass");
+  assert.equal(checkRule(ctc, "30,00,000").outcome, "fail");
+  assert.equal(checkRule(ctc, "negotiable").outcome, "unclear");
+  const qs = [{ title: "Current city", type: "short", options: [] }, { title: "Years of experience", type: "short", options: [] }];
+  assert.match(validateRule(r({ question: "Current city", op: "ai", instruction: "" }), qs)!, /Write the requirement/);
+  assert.equal(validateRule(r({ question: "Current city", op: "ai", instruction: "In Bengaluru or willing to relocate" }), qs), null);
+  assert.match(validateRule(r({ question: "Years of experience", op: "ai", instruction: "at most 5 years" }), qs)!, /age filter/);
+  assert.match(describeRule(r({ question: "Current city", op: "ai", instruction: "In Bengaluru" })), /AI checks: In Bengaluru/);
 });
 
 test("answerFor matches titles loosely; describeRule reads naturally", () => {

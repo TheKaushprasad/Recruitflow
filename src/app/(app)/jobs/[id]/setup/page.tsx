@@ -26,7 +26,7 @@ export default async function SetupPage({ params }: PageProps<"/jobs/[id]/setup"
   }
   return (
     <>
-      <SetupForm job={job} questions={(qs ?? []) as FormQuestion[]} googleConnected={!!conn} responses={count ?? 0} aiName={PROVIDER_LABEL[activeProvider() ?? "claude"]} ruleNotes={ruleNotes} />
+      <SetupForm job={job} questions={(qs ?? []) as FormQuestion[]} googleConnected={!!conn} responses={count ?? 0} aiName={PROVIDER_LABEL[activeProvider() ?? "openai"]} ruleNotes={ruleNotes} />
       <DeleteJob jobId={job.id} title={job.title} candidates={count ?? 0} />
     </>
   );

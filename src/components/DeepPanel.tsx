@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useAction } from "./Toast";
-import { saveCandidateLinks, startDeepEvaluation } from "@/app/actions/deep";
+import { moveToStage2, removeFromStage2, saveCandidateLinks, startDeepEvaluation } from "@/app/actions/deep";
 import { DECISION_LABEL, confLevel } from "@/lib/format";
 import { providerLabel } from "@/lib/ai/provider";
 import type { CandidateRow } from "@/lib/data";
@@ -41,12 +41,13 @@ export function DeepPanel({ jobId, candidate: c, threshold, canEvaluate }: {
   const running = deepRunning(d);
   const hasLinks = Object.values(links).some((v) => v.trim());
 
+  /** Not in stage 2 yet → move them (which starts the review); already there → re-run the review. */
   async function evaluate() {
     if (dirty) {
       const saved = await run(() => saveCandidateLinks(c.id, links));
       if (!saved.ok) return;
     }
-    await run(() => startDeepEvaluation(jobId, [c.id]));
+    await run(() => (c.inStage2 ? startDeepEvaluation(jobId, [c.id]) : moveToStage2(jobId, [c.id])));
     router.refresh();
   }
 
@@ -54,10 +55,15 @@ export function DeepPanel({ jobId, candidate: c, threshold, canEvaluate }: {
     <section className="panel" style={{ margin: "0 0 28px", padding: 20 }}>
       <div className="section-head" style={{ marginBottom: 12, alignItems: "center" }}>
         <div>
-          <p className="eyebrow" style={{ margin: "0 0 4px" }}>Stage 2 · Deep evaluation</p>
-          <h3>CV, portfolio &amp; GitHub against the JD and rubric</h3>
+          <p className="eyebrow" style={{ margin: "0 0 4px" }}>Stage 2 · CV, portfolio &amp; GitHub review</p>
+          <h3>{c.inStage2 ? "In stage 2" : "Still in stage 1"}</h3>
         </div>
-        {c.shortlisted && !d && <span className="chip lime">Shortlisted</span>}
+        {c.inStage2 ? (
+          <button className="btn-link" style={{ fontSize: 13 }} disabled={pending}
+            onClick={async () => { await run(() => removeFromStage2(jobId, [c.id])); router.refresh(); }}>
+            Move back to stage 1
+          </button>
+        ) : <span className="chip neutral">Stage 1 score: {c.evaluation && !c.stale ? c.evaluation.score : "—"}</span>}
       </div>
 
       <div style={{ display: "grid", gap: 8, marginBottom: 12 }}>
@@ -75,7 +81,7 @@ export function DeepPanel({ jobId, candidate: c, threshold, canEvaluate }: {
 
       <div className="row">
         <button className="pillbtn btn-lime btn-sm" disabled={pending || running || !canEvaluate || !hasLinks} onClick={evaluate}>
-          {running ? <><span className="spin" /> Evaluating…</> : d?.status === "done" ? "Re-evaluate" : "Evaluate"}
+          {running ? <><span className="spin" /> Reviewing…</> : !c.inStage2 ? "Move to stage 2 & review CV" : d?.status === "done" ? "Review again" : "Review CV"}
         </button>
         {dirty && (
           <button className="pillbtn btn-ghost btn-sm" disabled={pending} onClick={async () => { const r = await run(() => saveCandidateLinks(c.id, links)); if (r.ok) router.refresh(); }}>

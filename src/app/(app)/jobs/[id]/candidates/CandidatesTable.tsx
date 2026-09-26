@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useAction } from "@/components/Toast";
 import { CandidateDrawer } from "@/components/CandidateDrawer";
 import { VERDICT, deepRunning } from "@/components/DeepPanel";
-import { startDeepEvaluation } from "@/app/actions/deep";
+import { moveToStage2, startDeepEvaluation } from "@/app/actions/deep";
 import { SendEmailModal } from "@/components/SendEmailModal";
 import { SyncButton } from "@/components/SyncButton";
 import { moveCandidates, exportResults } from "@/app/actions/pipeline";
@@ -17,8 +17,8 @@ import type { Criterion, EmailTemplate, Job, Stage } from "@/lib/types";
 
 const FILTERS = [
   ["all", "All"],
-  ["shortlist", "Shortlist"],
-  ["evaluated", "Deep evaluated"],
+  ["stage1", "Stage 1"],
+  ["stage2", "Stage 2"],
   ["qualified", "Qualified"],
   ["review", "Needs review"],
   ["rechecked", "Rechecked"],
@@ -51,8 +51,8 @@ export function CandidatesTable(props: {
   const match = (c: CandidateRow, f: string) => {
     const e = c.evaluation && !c.stale ? c.evaluation : null;
     switch (f) {
-      case "shortlist": return c.shortlisted;
-      case "evaluated": return !!c.deep && c.deep.status === "done";
+      case "stage1": return !c.inStage2;
+      case "stage2": return c.inStage2;
       case "qualified": return !!e && !e.disqualified;
       case "review": return !!e && e.needs_review;
       case "rechecked": return !!e && e.criterion_results.some((r) => r.initial_confidence != null);
@@ -84,9 +84,14 @@ export function CandidatesTable(props: {
     return () => clearInterval(t);
   }, [anyRunning, router]);
 
-  const evaluate = async (ids: string[]) => {
-    const r = await run(() => startDeepEvaluation(job.id, ids));
+  /** Move to stage 2 (which starts the CV review), or re-run the review for people already there. */
+  const toStage2 = async (ids: string[]) => {
+    const r = await run(() => moveToStage2(job.id, ids));
     if (r.ok) { setSel(new Set()); router.refresh(); }
+  };
+  const reEvaluate = async (ids: string[]) => {
+    const r = await run(() => startDeepEvaluation(job.id, ids));
+    if (r.ok) router.refresh();
   };
   const counts = useMemo(() => Object.fromEntries(FILTERS.map(([k]) => [k, candidates.filter((c) => match(c, k)).length])), [candidates]);
 
@@ -152,8 +157,8 @@ export function CandidatesTable(props: {
                 }}>Add to pipeline</button>
               )}
               <button className="pillbtn btn-lime btn-sm" disabled={pending || !props.currentVersion || sel.size > 10}
-                title={sel.size > 10 ? "Evaluate up to 10 at a time" : undefined}
-                onClick={() => evaluate([...sel])}>Evaluate {sel.size} (CV + links)</button>
+                title={sel.size > 10 ? "Move up to 10 at a time — each one is reviewed right away" : "Moves them to stage 2 and starts the CV, portfolio and GitHub review"}
+                onClick={() => toStage2([...sel])}>Move {sel.size} to stage 2</button>
               <button className="pillbtn btn-dark btn-sm" onClick={() => setMailTo([...sel])}>Email {sel.size}</button>
             </>
           ) : (
@@ -168,7 +173,7 @@ export function CandidatesTable(props: {
             <tr>
               <th><input type="checkbox" aria-label="Select all shown" checked={rows.length > 0 && rows.every((c) => sel.has(c.id))}
                 onChange={(e) => { const s = new Set(sel); rows.forEach((c) => (e.target.checked ? s.add(c.id) : s.delete(c.id))); setSel(s); }} /></th>
-              <th>#</th><th>Candidate</th><th>Stage 1 score</th><th>Confidence</th><th>Stage 2 · CV &amp; links</th><th>Why they ranked here</th><th>Status</th>
+              <th>#</th><th>Candidate</th><th>Stage 1 score</th><th>Confidence</th><th>Stage 2 · CV review</th><th>Why they ranked here</th><th>Pipeline</th>
             </tr>
           </thead>
           <tbody>
@@ -190,9 +195,17 @@ export function CandidatesTable(props: {
                       {rechecked > 0 && <div className="hint" style={{ marginTop: 4 }}>↻ {rechecked} rechecked by {providerLabel(e!.criterion_results.find((r) => r.initial_confidence != null)?.scored_by)}</div>}
                     </>
                   ) : null}</td>
-                  <td>
-                    {c.deep && deepRunning(c.deep) ? (
-                      <span className="chip neutral"><span className="spin" /> Evaluating</span>
+                  <td onClick={(ev) => ev.stopPropagation()}>
+                    {!c.inStage2 ? (
+                      e?.disqualified ? <span className="muted">—</span> : (
+                        <button className="pillbtn btn-lime btn-sm" disabled={pending || !props.currentVersion || !e}
+                          title={!e ? "Waiting for the stage-1 result" : "Move to stage 2 and review their CV, portfolio and GitHub"}
+                          onClick={() => toStage2([c.id])}>
+                          Move to stage 2
+                        </button>
+                      )
+                    ) : c.deep && deepRunning(c.deep) ? (
+                      <span className="chip neutral"><span className="spin" /> Reviewing CV</span>
                     ) : c.deep?.status === "done" ? (
                       <div style={{ display: "grid", gap: 4, opacity: c.deepStale ? 0.6 : 1 }}>
                         <span className="row" style={{ gap: 6, flexWrap: "nowrap" }}>
@@ -203,20 +216,14 @@ export function CandidatesTable(props: {
                         </span>
                         {c.deepStale && <span className="hint" style={{ margin: 0 }}>older rubric</span>}
                       </div>
-                    ) : e?.disqualified ? (
-                      <span className="muted">—</span>
+                    ) : !(c.resume_url || c.portfolio_url || c.github_url) ? (
+                      <button className="btn-link" style={{ fontSize: 13 }} onClick={() => openCandidate(c.id)}>In stage 2 · add a CV link</button>
                     ) : (
                       <div style={{ display: "grid", gap: 4, justifyItems: "start" }}>
-                        <button
-                          className={`pillbtn ${c.shortlisted ? "btn-lime" : "btn-ghost"} btn-sm`}
-                          disabled={pending || !props.currentVersion || !(c.resume_url || c.portfolio_url || c.github_url)}
-                          title={!(c.resume_url || c.portfolio_url || c.github_url) ? "No CV, portfolio or GitHub link — add one in their profile" : "Read CV, portfolio and GitHub against the JD and rubric"}
-                          onClick={(ev) => { ev.stopPropagation(); evaluate([c.id]); }}
-                        >
-                          {c.deep?.status === "error" ? "Retry" : "Evaluate"}
+                        <button className="pillbtn btn-ghost btn-sm" disabled={pending} onClick={() => reEvaluate([c.id])}>
+                          {c.deep?.status === "error" ? "Retry review" : "Review CV"}
                         </button>
                         {c.deep?.status === "error" && <span className="error-text" style={{ fontSize: 12 }}>Last run failed</span>}
-                        {c.shortlisted && !c.deep && <span className="hint" style={{ margin: 0 }}>Shortlisted</span>}
                       </div>
                     )}
                   </td>
@@ -227,7 +234,7 @@ export function CandidatesTable(props: {
                       : e.reason}
                   </td>
                   <td>
-                    {e?.disqualified ? <span className="chip bad">✕ {e.criterion_results.some((r) => r.scored_by === "rule" && r.decision === "fail") ? "Form rule" : "Hard filter"}</span>
+                    {e?.disqualified ? <span className="chip bad">✕ Filter</span>
                       : c.stage_id ? <span className="chip good">{stageName(c.stage_id)}</span>
                       : <span className="chip neutral">Not in pipeline</span>}
                   </td>
@@ -243,8 +250,8 @@ export function CandidatesTable(props: {
         </table>
       </div>
       <p className="hint">
-        Stage 1 screens everyone on their form answers: score = weighted share of criteria met (borderline counts half); Jev scores each criterion and {props.aiName} rechecks anything under {threshold.toFixed(2)} confidence.
-        Candidates scoring {job.shortlist_threshold}+ (or needing review) are shortlisted. Stage 2 runs only when you click Evaluate: {props.aiName} reads their CV, portfolio and GitHub against the JD and rubric.
+        Stage 1 screens everyone on their form answers: filters check single answers (exactly, or with an AI check for free text), and the score is the weighted share of criteria met (borderline counts half). Jev judges first and {props.aiName} rechecks anything under {threshold.toFixed(2)} confidence.
+        You decide who moves on: <b>Move to stage 2</b> starts {props.aiName}&apos;s review of their CV, portfolio and GitHub against the JD and the stage-2 rubric.
       </p>
 
       {opened && (

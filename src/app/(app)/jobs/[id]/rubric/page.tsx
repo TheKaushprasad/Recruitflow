@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { activeProvider, providerLabel, PROVIDER_LABEL } from "@/lib/ai/provider";
+import { providerLabel } from "@/lib/ai/provider";
 import { requireUser } from "@/lib/supabase/server";
 import { getJob, getRubrics, getRuleQuestions } from "@/lib/data";
 import { ACTION_LABEL, describeRule } from "@/lib/rules";
@@ -35,7 +35,7 @@ export default async function RubricPage({ params, searchParams }: PageProps<"/j
       {viewingOld ? (
         <OldVersion rubric={viewingOld} scored={scoredOn.get(viewingOld.id) ?? 0} back={base} />
       ) : (
-        <RubricEditor job={job} current={current} draft={draft} candidateCount={count ?? 0} aiName={PROVIDER_LABEL[activeProvider() ?? "claude"]} questions={questions} />
+        <RubricEditor job={job} current={current} draft={draft} candidateCount={count ?? 0} questions={questions} />
       )}
 
       {all.length > 0 && (
@@ -71,12 +71,8 @@ function OldVersion({ rubric, scored, back }: {
   scored: number;
   back: string;
 }) {
-  const hard = rubric.rubric_criteria.filter((c) => c.kind === "hard");
-  const soft = rubric.rubric_criteria.filter((c) => c.kind === "soft");
-  const rules = rubric.rubric_criteria.filter((c) => c.kind === "rule" && c.rule);
-  const total = rubric.rubric_criteria
-    .filter((c) => c.enabled && (c.kind === "soft" || (c.kind === "rule" && c.rule?.action === "score")))
-    .reduce((a, c) => a + c.weight, 0);
+  const all = rubric.rubric_criteria;
+  const rules = all.filter((c) => c.kind === "rule" && c.rule);
   return (
     <>
       <div className="section-head">
@@ -90,8 +86,9 @@ function OldVersion({ rubric, scored, back }: {
         </div>
         <Link className="pillbtn btn-ghost btn-sm" href={back} style={{ textDecoration: "none" }}>Back to current rubric</Link>
       </div>
+      <p className="eyebrow">Stage 1 · Form screening</p>
       <div className="panel" style={{ marginBottom: 24 }}>
-        <h3 style={{ marginBottom: 6 }}>Form rules</h3>
+        <h3 style={{ marginBottom: 6 }}>Filters on form answers</h3>
         {rules.length ? rules.map((r) => (
           <div className="hard" key={r.id}>
             <span className={`chip ${r.enabled ? "good" : "neutral"}`}>{r.enabled ? "On" : "Off"}</span>
@@ -103,33 +100,31 @@ function OldVersion({ rubric, scored, back }: {
           </div>
         )) : <p className="muted" style={{ fontSize: 14 }}>None.</p>}
       </div>
-      <div className="panel" style={{ marginBottom: 24 }}>
-        <h3 style={{ marginBottom: 6 }}>AI-judged hard filters</h3>
-        {hard.length ? hard.map((h) => (
-          <div className="hard" key={h.id}>
-            <span className={`chip ${h.enabled ? "good" : "neutral"}`}>{h.enabled ? "On" : "Off"}</span>
-            <div className="x">
-              <b>{h.name}</b>
-              <div className="src">{h.description}</div>
-              {h.source_constraint && <div className="src">From constraint: “{h.source_constraint}”</div>}
-            </div>
-          </div>
-        )) : <p className="muted" style={{ fontSize: 14 }}>None.</p>}
-      </div>
-      <div className="panel">
-        <h3 style={{ marginBottom: 6 }}>Scored criteria</h3>
-        {soft.map((c) => (
-          <div className="crit" key={c.id} style={{ opacity: c.enabled ? 1 : 0.5 }}>
-            <div>
-              <b>{c.name}</b>
-              <p className="desc">{c.description}</p>
-              {c.bias_flag && <div className="flag">⚑ {c.bias_flag}</div>}
-            </div>
-            <span className="mono">{total && c.enabled ? Math.round((c.weight / total) * 100) : 0}%</span>
-            <span className="muted" style={{ fontSize: 13 }}>{c.enabled ? "" : "Not used"}</span>
-          </div>
-        ))}
-      </div>
+      <ReadOnlyCriteria title="AI-judged filters" rows={all.filter((c) => c.stage === 1 && c.kind === "hard")} />
+      <ReadOnlyCriteria title="Scored criteria for free-text answers" rows={all.filter((c) => c.stage === 1 && c.kind === "soft")} />
+      <p className="eyebrow" style={{ marginTop: 28 }}>Stage 2 · CV, portfolio &amp; GitHub</p>
+      <ReadOnlyCriteria title="Must-haves" rows={all.filter((c) => c.stage === 2 && c.kind === "hard")} />
+      <ReadOnlyCriteria title="Scored criteria" rows={all.filter((c) => c.stage === 2 && c.kind === "soft")} />
     </>
+  );
+}
+
+function ReadOnlyCriteria({ title, rows }: { title: string; rows: Awaited<ReturnType<typeof getRubrics>>["all"][number]["rubric_criteria"] }) {
+  const total = rows.filter((c) => c.enabled && c.kind === "soft").reduce((a, c) => a + c.weight, 0);
+  return (
+    <div className="panel" style={{ marginBottom: 24 }}>
+      <h3 style={{ marginBottom: 6 }}>{title}</h3>
+      {rows.length ? rows.map((c) => (
+        <div className="crit" key={c.id} style={{ opacity: c.enabled ? 1 : 0.5 }}>
+          <div>
+            <b>{c.name}</b>
+            <p className="desc">{c.description}</p>
+            {c.bias_flag && <div className="flag">⚑ {c.bias_flag}</div>}
+          </div>
+          <span className="mono">{c.kind === "soft" ? `${total && c.enabled ? Math.round((c.weight / total) * 100) : 0}%` : ""}</span>
+          <span className="muted" style={{ fontSize: 13 }}>{c.enabled ? "" : "Not used"}</span>
+        </div>
+      )) : <p className="muted" style={{ fontSize: 14 }}>None.</p>}
+    </div>
   );
 }

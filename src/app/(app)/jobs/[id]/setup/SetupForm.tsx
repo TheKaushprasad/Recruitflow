@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useAction } from "@/components/Toast";
 import { linkExistingForm, publishForm, saveJobDetails, saveQuestions } from "@/app/actions/jobs";
-import { generateRubric } from "@/app/actions/rubric";
 import { timeAgo } from "@/lib/format";
 import type { FormQuestion, Job, QuestionRole, QuestionType } from "@/lib/types";
 
@@ -83,22 +82,13 @@ export function SetupForm({ job, questions, googleConnected, responses, aiName, 
           <div className="field"><label className="f" htmlFor="cons">Additional constraints</label>
             <textarea id="cons" rows={3} value={details.constraints} onChange={(e) => setDetails({ ...details, constraints: e.target.value })}
               placeholder={"Reject if notice period is more than 60 days\nMust be able to work from the Bengaluru office 3 days a week"} />
-            <p className="hint">One per line. These become hard filters that disqualify a candidate rather than lowering their score.</p></div>
+            <p className="hint">One per line. On the Rubric tab, {aiName} turns these into stage-1 filters on the form answers, e.g. “reject if notice period is more than 60 days”.</p></div>
           <div className="row">
-            <button className="pillbtn btn-ghost" disabled={!!busy} onClick={() => act("save", () => saveJobDetails(job.id, details))}>
+            <button className="pillbtn btn-dark" disabled={!!busy} onClick={() => act("save", () => saveJobDetails(job.id, details))}>
               {busy === "save" ? <span className="spin" /> : "Save"}
             </button>
-            <button className="pillbtn btn-dark" disabled={!!busy}
-              onClick={async () => {
-                const saved = await act("save", () => saveJobDetails(job.id, details));
-                if (!saved.ok) return;
-                const r = await act("gen", () => generateRubric(job.id));
-                if (r.ok) router.push(`/jobs/${job.id}/rubric`);
-              }}>
-              {busy === "gen" ? <><span className="spin" /> {aiName} is reading the JD…</> : job.current_rubric_id ? "Save & regenerate rubric" : "Save & generate rubric"}
-            </button>
+            <Link href={`/jobs/${job.id}/rubric`} className="hint" style={{ margin: 0 }}>Set up the stage 1 and stage 2 rubric →</Link>
           </div>
-          <p className="hint">You review the rubric before anyone is scored.</p>
         </div>
 
         <div className="panel">

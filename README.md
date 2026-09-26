@@ -2,27 +2,30 @@
 
 Rubric-based candidate screening. A recruiter links a job description to a Google Form. Every applicant is scored against one rubric, criterion by criterion, with evidence for each decision. Candidates then move through an interview pipeline, and invites and emails go out from the recruiter's own Google account.
 
-**Stack:** Next.js 16 (App Router) · Supabase (Postgres, Auth, RLS, Realtime) · OpenAI or Claude (rubric drafting, rechecks, evidence, CV review — set with `AI_PROVIDER`) · Jev by TypeSafe AI (per-criterion decisions) · Google Forms / Sheets / Gmail / Calendar APIs.
+**Stack:** Next.js 16 (App Router) · Supabase (Postgres, Auth, RLS, Realtime) · OpenAI (rubric drafting, stage-1 rechecks, stage-2 CV review) · Jev by TypeSafe AI (stage-1 decisions) · Google Forms / Sheets / Gmail / Calendar APIs.
 
 ## How screening works
 
-1. **Rubric.** The AI turns the job description and your constraints into a rubric with three kinds of item:
-   - **Form rules:** exact checks on a form answer, e.g. years of experience at least 3, or notice period one of Immediate…60 days. Each rule rejects, flags for review, or adds to the score. The AI suggests them from your constraints and maps each one to the right form question; you edit or approve them.
-   - **AI-judged filters:** constraints that can't be read from a single field.
-   - **Scored criteria:** weighted skills from the JD.
+The rubric has two stages, each with full add / edit / delete on the **Rubric** tab. Each stage can be drafted by OpenAI. Every rubric version is stored, and approved versions are locked, so every result can be traced back to its version.
 
-   Each rubric version is stored, and approved versions are locked, so every score can be traced back to its version.
-2. **Ingest.** New responses are pulled every few minutes, whenever you open a job, or straight away with **Sync now**.
-3. **Stage 1a: form rules (every applicant, instant, no AI).** Failing a "reject" rule stops the candidate here, so no AI cost is spent on them. Blank or unreadable answers are flagged for review, never rejected.
-4. **Stage 1b: AI screening of form answers.** Jev decides each criterion with a calibrated confidence. Anything below the threshold (0.70 by default) is rechecked by the AI, which also writes the evidence for every decision. If only rules or weights changed between rubric versions, earlier AI results are reused, so the rescoring costs nothing.
-5. **Shortlist.** A stage-1 score at or above the job's cut-off (60 by default), or a "needs review" flag, marks the candidate as Shortlisted.
-6. **Stage 2: deep evaluation (when you click Evaluate).** The AI reads the JD, the CV (PDF, Google Drive/Docs, Dropbox), the form answers, the portfolio site and the GitHub profile together. Form rules are passed in as fixed facts. You get a suitability score, a verdict, strengths, concerns, per-criterion evidence tagged by source, and interview questions.
-7. **Scoring maths.** The score is the weighted share of criteria and score-rules met; borderline or unclear counts as half. Failing a hard filter or a reject-rule disqualifies the candidate, and this is shown separately.
+1. **Stage 1 · Form screening (every applicant, automatic).**
+   - **Filters on form answers.** Each form question worth screening on (location, experience, expected CTC, notice period…) is offered as a filter.
+     - Structured answers (dropdowns, numbers, dates) are checked exactly in code.
+     - Free-text answers ("Bangalore / BLR", "12L", "12,00,000") get an **AI check** against a requirement you write in plain words.
+     - Each filter rejects, flags for review, or adds points. Blank or unclear answers are flagged, never rejected.
+     - Failing an exact reject-filter stops the candidate before any AI cost.
+   - **Scored criteria** rate the open-ended answers.
+   - **How AI items are judged:** Jev decides first, OpenAI rechecks anything under the confidence threshold (0.70 by default) and writes the evidence. Unchanged AI items are reused across rubric versions, so editing filters, weights or stage 2 re-applies instantly and for free.
+2. **You decide who moves on.** Based on the stage-1 score and reasons, click **Move to stage 2**, for one candidate or up to 10 at a time.
+3. **Stage 2 · CV, portfolio and GitHub review (starts on the move).**
+   - OpenAI judges the stage-2 rubric's criteria and must-haves using the JD together with the CV (PDF, Google Drive/Docs, Dropbox), form answers, portfolio site and GitHub profile. Stage-1 results are passed in as context.
+   - You get a suitability score, a verdict, strengths, concerns, per-criterion evidence tagged by source, and interview questions.
+4. **Scoring maths.** A stage's score is the weighted share of its criteria (and points-filters) met; borderline or unclear counts as half. Failing a reject-filter or a must-have disqualifies the candidate, and this is shown separately.
 
 ## Setup
 
 ### 1. Supabase
-1. Create a project. In the SQL editor, run every file in `supabase/migrations/` in order (`0001_init.sql` … `0006_form_rules.sql`).
+1. Create a project. In the SQL editor, run every file in `supabase/migrations/` in order (`0001_init.sql` … `0007_two_stage_rubric.sql`).
 2. Go to **Authentication → URL configuration** and set Site URL to your `APP_URL`. Add `APP_URL/auth/callback` as a redirect URL.
 3. Optional: under **Authentication → Providers**, enable Google sign-in. This is only for logging in; the Google data connection is set up separately (next section).
 
@@ -60,7 +63,8 @@ Sign in, open **Integrations → Connect Google**, then create a job.
 
 ## Differences from the PRD
 - **In-app forms can't auto-link a response Sheet.** The Forms API exposes `linkedSheetId` as read-only. recruitflow reads those responses through the Forms API instead. **Export to Sheet** writes ranked results to a new spreadsheet (or to the linked Sheet for linked forms).
-- **No n8n.** Orchestration (ingest → Jev → Claude → Supabase) runs inside the app, triggered by `/api/cron`.
+- **No n8n.** Orchestration (ingest → Jev → OpenAI → Supabase) runs inside the app, triggered by `/api/cron`.
+- **OpenAI instead of Claude.** OpenAI drafts the rubric and does the rechecks and CV reviews.
 - **Resume files aren't read.** Candidates paste a resume link, which is shown for context only.
 - **Emails only go out on your confirmation.** They're sent from your Gmail, and every send is logged.
 

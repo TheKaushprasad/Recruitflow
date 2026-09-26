@@ -55,6 +55,8 @@ export interface Criterion {
   bias_flag: string | null;
   enabled: boolean;
   rule: FormRule | null;
+  /** 1 = form screening, 2 = CV / portfolio / GitHub review */
+  stage: 1 | 2;
 }
 
 export type CriterionKind = "hard" | "soft" | "rule";
@@ -97,6 +99,8 @@ export interface Candidate {
   resume_url: string | null;
   portfolio_url: string | null;
   github_url: string | null;
+  /** when the recruiter moved them to stage 2 (CV review); null = still in stage 1 */
+  stage2_at: string | null;
   answers: Answer[];
   submitted_at: string | null;
   stage_id: string | null;
@@ -160,6 +164,7 @@ export interface CriterionResult {
   decision: Decision;
   confidence: number;
   evidence: string;
+  /** "rule" = exact check in code; jev / openai (or legacy claude) = AI-judged */
   scored_by: "jev" | "claude" | "openai" | "rule";
   initial_confidence: number | null;
   probabilities: Record<string, number> | null;

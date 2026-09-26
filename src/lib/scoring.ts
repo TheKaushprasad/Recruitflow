@@ -4,10 +4,10 @@ import { jevDecide, type JevChoiceQuestion } from "./ai/jev";
 import { reviewCandidate, type ReviewCriterion } from "./ai/llm";
 import { env } from "./env";
 import { aggregate } from "./aggregate";
-import { answerFor, checkRule } from "./rules";
+import { answerFor, checkRule, isAiRule } from "./rules";
 import type { Candidate, Criterion, CriterionResult, Decision, Job } from "./types";
 
-interface Final {
+export interface Final {
   criterion: Criterion;
   decision: Decision;
   confidence: number;
@@ -17,10 +17,22 @@ interface Final {
   probabilities: Record<string, number> | null;
 }
 
-/** Identity of an AI-judged criterion, independent of rubric version. */
-const sig = (c: Pick<Criterion, "kind" | "name" | "description">) => `${c.kind}\u0000${c.name.trim()}\u0000${c.description.trim()}`;
+/** Stage-1 items the AI judges: AI-check filters on free-text answers, AI filters, and scored criteria. */
+const isAiJudged = (c: Criterion) => c.kind !== "rule" || isAiRule(c.rule);
 
-/** Checks every form rule exactly, in code. */
+/** Identity of an AI-judged item, independent of rubric version (for reusing results). */
+const sig = (c: Pick<Criterion, "kind" | "name" | "description" | "rule">) =>
+  [c.kind, c.name.trim(), c.description.trim(), c.rule?.question ?? "", c.rule?.instruction ?? ""].join("\u0000");
+
+/** How an AI-judged item is presented to Jev / the reviewer. AI-check filters are pass/fail filters on one answer. */
+function asReview(c: Criterion): { kind: "hard" | "soft"; name: string; description: string } {
+  if (c.kind === "rule") {
+    return { kind: "hard", name: c.name, description: `Answer to “${c.rule!.question}” must meet: ${c.rule!.instruction}` };
+  }
+  return { kind: c.kind as "hard" | "soft", name: c.name, description: c.description };
+}
+
+/** Exact filters, checked in code. */
 export function applyRules(rules: Criterion[], answers: Candidate["answers"]): Final[] {
   return rules.map((c) => {
     const chk = checkRule(c.rule!, answerFor(c.rule!, answers));
@@ -37,11 +49,10 @@ export function applyRules(rules: Criterion[], answers: Candidate["answers"]): F
 }
 
 /**
- * If this candidate was already AI-scored on a rubric version whose AI criteria are
- * identical (same kind, name and description), reuse those results. Changing only
- * form rules or weights then re-applies instantly and costs nothing.
+ * Reuse AI results from an earlier rubric version when the stage-1 AI items are identical,
+ * so editing only exact filters, weights or the stage-2 rubric re-applies instantly and for free.
  */
-async function reuseAiResults(db: SupabaseClient, candidateId: string, rubricId: string, aiCrit: Criterion[]) {
+async function reuseAiResults(db: SupabaseClient, candidateId: string, rubricId: string, aiItems: Criterion[]) {
   const { data: prev } = await db
     .from("evaluations")
     .select("rubric_id, reason, created_at, criterion_results(*)")
@@ -50,24 +61,19 @@ async function reuseAiResults(db: SupabaseClient, candidateId: string, rubricId:
     .order("created_at", { ascending: false })
     .limit(3);
   for (const ev of prev ?? []) {
-    const { data: oldCrit } = await db.from("rubric_criteria").select("id, kind, name, description").eq("rubric_id", ev.rubric_id);
+    const { data: oldCrit } = await db.from("rubric_criteria").select("id, kind, name, description, rule").eq("rubric_id", ev.rubric_id);
     const oldById = new Map((oldCrit ?? []).map((c) => [c.id, c]));
     const bySig = new Map<string, CriterionResult>();
     for (const r of ev.criterion_results as CriterionResult[]) {
       const oc = oldById.get(r.criterion_id);
-      if (oc && oc.kind !== "rule" && r.scored_by !== "rule") bySig.set(sig(oc), r);
+      if (oc && r.scored_by !== "rule") bySig.set(sig(oc as Criterion), r);
     }
-    if (!aiCrit.every((c) => bySig.has(sig(c)))) continue;
-    const finals: Final[] = aiCrit.map((c) => {
+    if (!aiItems.every((c) => bySig.has(sig(c)))) continue;
+    const finals: Final[] = aiItems.map((c) => {
       const r = bySig.get(sig(c))!;
       return {
-        criterion: c,
-        decision: r.decision,
-        confidence: Number(r.confidence),
-        evidence: r.evidence,
-        scoredBy: r.scored_by,
-        initialConfidence: r.initial_confidence == null ? null : Number(r.initial_confidence),
-        probabilities: r.probabilities,
+        criterion: c, decision: r.decision, confidence: Number(r.confidence), evidence: r.evidence, scoredBy: r.scored_by,
+        initialConfidence: r.initial_confidence == null ? null : Number(r.initial_confidence), probabilities: r.probabilities,
       };
     });
     return { finals, reason: ev.reason as string };
@@ -75,15 +81,16 @@ async function reuseAiResults(db: SupabaseClient, candidateId: string, rubricId:
   return null;
 }
 
-/** Jev decides each AI criterion; the AI reviewer rechecks low-confidence ones and writes evidence for all. */
-async function scoreWithAi(job: Job, candidate: Candidate, aiCrit: Criterion[]) {
+/** Jev decides each item; OpenAI rechecks low-confidence ones and writes evidence for all. */
+async function scoreWithAi(job: Job, candidate: Candidate, items: Criterion[]) {
   const threshold = Number(job.recheck_threshold);
   const keyOf = (i: number) => `c${i}`;
+  const view = items.map(asReview);
 
   const jev: Record<string, { decision: Decision; confidence: number; probabilities: Record<string, number> | null }> = {};
   if (env.jevConfigured()) {
     const questions: Record<string, JevChoiceQuestion> = {};
-    aiCrit.forEach((c, i) => {
+    view.forEach((c, i) => {
       questions[keyOf(i)] =
         c.kind === "hard"
           ? {
@@ -105,11 +112,8 @@ async function scoreWithAi(job: Job, candidate: Candidate, aiCrit: Criterion[]) 
               },
             };
     });
-    const answers = await jevDecide(
-      { application: candidate.answers.map((a) => ({ question: a.question, answer: a.answer })), resume_link: candidate.resume_url },
-      questions,
-    );
-    aiCrit.forEach((_, i) => {
+    const answers = await jevDecide({ application: candidate.answers.map((a) => ({ question: a.question, answer: a.answer })) }, questions);
+    view.forEach((_, i) => {
       const a = answers[keyOf(i)];
       if (a?.choice) {
         jev[keyOf(i)] = {
@@ -121,38 +125,28 @@ async function scoreWithAi(job: Job, candidate: Candidate, aiCrit: Criterion[]) 
     });
   }
 
-  const reviewInput: ReviewCriterion[] = aiCrit.map((c, i) => {
+  const reviewInput: ReviewCriterion[] = view.map((c, i) => {
     const j = jev[keyOf(i)];
     const settled = j && j.confidence >= threshold && j.decision !== "unclear" ? j : undefined;
-    return {
-      key: keyOf(i),
-      kind: c.kind as "hard" | "soft",
-      name: c.name,
-      description: c.description,
-      settled: settled ? { decision: settled.decision, confidence: settled.confidence } : undefined,
-    };
+    return { key: keyOf(i), ...c, settled: settled ? { decision: settled.decision, confidence: settled.confidence } : undefined };
   });
-  const { output: review, provider: reviewer } = await reviewCandidate({
-    jobTitle: job.title,
-    criteria: reviewInput,
-    answers: candidate.answers,
-    resumeUrl: candidate.resume_url,
-  });
+  const { output: review, provider: reviewer } = await reviewCandidate({ jobTitle: job.title, criteria: reviewInput, answers: candidate.answers });
   const byKey = new Map(review.results.map((r) => [r.key, r]));
 
-  const finals: Final[] = aiCrit.map((c, i) => {
+  const finals: Final[] = items.map((c, i) => {
     const k = keyOf(i);
     const j = jev[k];
     const r = byKey.get(k);
     const settled = reviewInput[i].settled;
-    const allowed = c.kind === "hard" ? ["pass", "fail", "unclear"] : ["meets", "borderline", "not_met"];
+    const hardLike = view[i].kind === "hard";
+    const allowed = hardLike ? ["pass", "fail", "unclear"] : ["meets", "borderline", "not_met"];
     if (settled) {
       return {
         criterion: c, decision: settled.decision as Decision, confidence: settled.confidence,
         evidence: r?.evidence ?? "", scoredBy: "jev", initialConfidence: null, probabilities: j?.probabilities ?? null,
       };
     }
-    const decision = r && allowed.includes(r.decision) ? r.decision : c.kind === "hard" ? "unclear" : "borderline";
+    const decision = r && allowed.includes(r.decision) ? r.decision : hardLike ? "unclear" : "borderline";
     return {
       criterion: c, decision, confidence: clamp(r?.confidence ?? 0), evidence: r?.evidence ?? "No evidence returned.",
       scoredBy: reviewer, initialConfidence: j ? j.confidence : null, probabilities: j?.probabilities ?? null,
@@ -162,10 +156,10 @@ async function scoreWithAi(job: Job, candidate: Candidate, aiCrit: Criterion[]) 
 }
 
 /**
- * Stage 1 for one candidate against one rubric version:
- * 1. Form rules are checked exactly. Failing a "reject" rule stops here — no AI call.
- * 2. AI criteria are scored (Jev + AI reviewer), or reused from an earlier version
- *    when the AI criteria haven't changed.
+ * Stage 1 for one candidate against one rubric version (form answers only):
+ * 1. Exact filters are checked in code. Failing a "reject" filter stops here — no AI call.
+ * 2. AI-check filters (free-text answers) and scored criteria go to Jev + OpenAI,
+ *    or are reused from an earlier version when unchanged.
  */
 export async function scoreCandidate(db: SupabaseClient, job: Job, rubricId: string, candidate: Candidate) {
   const { data: criteria, error } = await db
@@ -173,53 +167,46 @@ export async function scoreCandidate(db: SupabaseClient, job: Job, rubricId: str
     .select("*")
     .eq("rubric_id", rubricId)
     .eq("enabled", true)
+    .eq("stage", 1)
     .order("position");
   if (error) throw new Error(error.message);
   const crit = (criteria ?? []) as Criterion[];
-  if (!crit.length) throw new Error("Rubric has no enabled criteria.");
+  if (!crit.length) throw new Error("The stage-1 rubric has no enabled filters or criteria.");
   const threshold = Number(job.recheck_threshold);
 
-  const rules = crit.filter((c) => c.kind === "rule" && c.rule);
-  const aiCrit = crit.filter((c) => c.kind !== "rule");
+  const exact = crit.filter((c) => c.kind === "rule" && c.rule && !isAiRule(c.rule));
+  const aiItems = crit.filter(isAiJudged);
 
-  // ---- 1. form rules ----
-  const ruleFinals = applyRules(rules, candidate.answers);
+  const ruleFinals = applyRules(exact, candidate.answers);
   const rejectedBy = ruleFinals.find((f) => f.criterion.rule!.action === "reject" && f.decision === "fail");
 
-  // ---- 2. AI criteria (skipped when a rule already rejected the candidate) ----
   let aiFinals: Final[] = [];
   let aiReason: string | null = null;
-  if (!rejectedBy && aiCrit.length) {
-    const reused = await reuseAiResults(db, candidate.id, rubricId, aiCrit);
-    const scored = reused ?? (await scoreWithAi(job, candidate, aiCrit));
+  if (!rejectedBy && aiItems.length) {
+    const scored = (await reuseAiResults(db, candidate.id, rubricId, aiItems)) ?? (await scoreWithAi(job, candidate, aiItems));
     aiFinals = scored.finals;
     aiReason = scored.reason;
   }
 
   const finals = [...ruleFinals, ...aiFinals];
   const agg = aggregate(
-    finals.map((f) => ({
-      kind: f.criterion.kind,
-      action: f.criterion.rule?.action,
-      weight: f.criterion.weight,
-      decision: f.decision,
-      confidence: f.confidence,
-    })),
+    finals.map((f) => ({ kind: f.criterion.kind, action: f.criterion.rule?.action, weight: f.criterion.weight, decision: f.decision, confidence: f.confidence })),
     threshold,
   );
 
-  const aiHardFail = aiFinals.find((f) => f.criterion.kind === "hard" && f.decision === "fail");
-  const flagged = ruleFinals.filter((f) => f.decision === "unclear" || (f.criterion.rule!.action === "flag" && f.decision === "fail"));
+  const failedFilter =
+    rejectedBy ??
+    aiFinals.find((f) => f.decision === "fail" && (f.criterion.kind === "hard" || f.criterion.rule?.action === "reject"));
+  const flagged = finals.filter((f) => f.criterion.kind === "rule" && (f.decision === "unclear" || (f.criterion.rule!.action === "flag" && f.decision === "fail")));
   let reason: string;
-  if (rejectedBy) reason = `Fails form rule “${rejectedBy.criterion.name}”: ${rejectedBy.evidence} AI screening skipped.`;
-  else if (aiHardFail) reason = `Fails "${aiHardFail.criterion.name}": ${aiHardFail.evidence}`;
+  if (rejectedBy) reason = `Fails filter “${rejectedBy.criterion.name}”: ${rejectedBy.evidence} AI screening skipped.`;
+  else if (failedFilter) reason = `Fails “${failedFilter.criterion.name}”: ${failedFilter.evidence}`;
   else if (aiReason) reason = aiReason;
-  else reason = flagged.length ? "Form rules need a look — see flagged answers." : "Meets every form rule.";
-  if (!rejectedBy && flagged.length && aiReason) {
-    reason += ` Check form answer${flagged.length === 1 ? "" : "s"}: ${flagged.map((f) => f.criterion.name).join(", ")}.`;
+  else reason = flagged.length ? "Some filters need a look — see flagged answers." : "Passes every filter.";
+  if (!failedFilter && flagged.length && aiReason) {
+    reason += ` Check: ${flagged.map((f) => f.criterion.name).join(", ")}.`;
   }
 
-  // ---- 3. persist (replace any previous evaluation for this rubric) ----
   await db.from("evaluations").delete().eq("candidate_id", candidate.id).eq("rubric_id", rubricId);
   const { data: evaluation, error: evErr } = await db
     .from("evaluations")
