@@ -12,6 +12,14 @@ if (process.env.VERCEL || process.env.CI) {
   const status = (k: string) => `${k}=${process.env[k]?.trim() ? "set" : "MISSING"}`;
   console.log(`[recruitflow] build env (${process.env.VERCEL_ENV ?? "unknown"}): ${PUBLIC_AT_BUILD.map(status).join(", ")}`);
   console.log(`[recruitflow] runtime env: ${SERVER_AT_RUNTIME.map(status).join(", ")}`);
+  // Shape of the OpenAI key only (never the key): catches quotes, stray spaces and cut-off pastes.
+  const k = process.env.OPENAI_API_KEY ?? "";
+  if (k) {
+    console.log(
+      `[recruitflow] OPENAI_API_KEY shape: length ${k.length}, starts "sk-": ${k.startsWith("sk-")}, ` +
+        `quotes: ${/^["']|["']$/.test(k)}, spaces/newlines: ${/\s/.test(k)}`,
+    );
+  }
   const missing = PUBLIC_AT_BUILD.filter((k) => !process.env[k]?.trim());
   if (missing.length) {
     throw new Error(
