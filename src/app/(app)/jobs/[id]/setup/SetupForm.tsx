@@ -7,7 +7,7 @@ import { useAction } from "@/components/Toast";
 import { linkExistingForm, publishForm, saveJobDetails, saveQuestions } from "@/app/actions/jobs";
 import { generateRubric } from "@/app/actions/rubric";
 import { timeAgo } from "@/lib/format";
-import type { FormQuestion, Job, QuestionType } from "@/lib/types";
+import type { FormQuestion, Job, QuestionRole, QuestionType } from "@/lib/types";
 
 const TYPES: [QuestionType, string][] = [
   ["short", "Short answer"],
@@ -18,10 +18,25 @@ const TYPES: [QuestionType, string][] = [
   ["date", "Date"],
 ];
 const hasOptions = (t: QuestionType) => t === "choice" || t === "dropdown" || t === "checkbox";
+const ROLES: [QuestionRole, string][] = [
+  ["name", "name"],
+  ["email", "email"],
+  ["resume", "CV link"],
+  ["portfolio", "portfolio link"],
+  ["github", "GitHub profile"],
+];
 
 type Q = Pick<FormQuestion, "title" | "type" | "required" | "options" | "role"> & { key: string };
 
-export function SetupForm({ job, questions, googleConnected, responses }: { job: Job; questions: FormQuestion[]; googleConnected: boolean; responses: number }) {
+export function SetupForm({ job, questions, googleConnected, responses, aiName, ruleNotes }: {
+  job: Job;
+  questions: FormQuestion[];
+  googleConnected: boolean;
+  responses: number;
+  aiName: string;
+  /** screening rules per question title (lower-cased) */
+  ruleNotes: Record<string, string[]>;
+}) {
   const router = useRouter();
   const { run } = useAction();
   const [details, setDetails] = useState({ title: job.title, location: job.location, description: job.description, constraints: job.constraints });
@@ -53,7 +68,7 @@ export function SetupForm({ job, questions, googleConnected, responses }: { job:
         <div>
           <p className="eyebrow" style={{ margin: "0 0 8px" }}>Job setup</p>
           <h2>One job, one rubric, one form</h2>
-          <p>The rubric Claude builds from this description is reused for every applicant, so scores stay comparable.</p>
+          <p>The rubric {aiName} builds from this description is reused for every applicant, so scores stay comparable.</p>
         </div>
       </div>
       <div className="grid2">
@@ -80,7 +95,7 @@ export function SetupForm({ job, questions, googleConnected, responses }: { job:
                 const r = await act("gen", () => generateRubric(job.id));
                 if (r.ok) router.push(`/jobs/${job.id}/rubric`);
               }}>
-              {busy === "gen" ? <><span className="spin" /> Claude is reading the JD…</> : job.current_rubric_id ? "Save & regenerate rubric" : "Save & generate rubric"}
+              {busy === "gen" ? <><span className="spin" /> {aiName} is reading the JD…</> : job.current_rubric_id ? "Save & regenerate rubric" : "Save & generate rubric"}
             </button>
           </div>
           <p className="hint">You review the rubric before anyone is scored.</p>
@@ -117,7 +132,25 @@ export function SetupForm({ job, questions, googleConnected, responses }: { job:
                         onChange={(e) => setQ(i, { options: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })} />
                     </div>
                   )}
-                  {q.role && <p className="hint" style={{ margin: "0 0 8px 8px" }}>Used as the candidate&apos;s {q.role === "resume" ? "resume link" : q.role}.</p>}
+                  {(ruleNotes[q.title.trim().toLowerCase()] ?? []).map((n) => (
+                    <p key={n} className="hint" style={{ margin: "0 0 6px 8px" }}>
+                      <span className="chip lime" style={{ fontSize: 11 }}>Screening rule</span> {n}{" "}
+                      <Link href={`/jobs/${job.id}/rubric`}>Edit</Link>
+                    </p>
+                  ))}
+                  <div className="row" style={{ gap: 8, margin: "0 0 8px 8px" }}>
+                    <label className="hint" htmlFor={`qrole-${q.key}`} style={{ margin: 0 }}>Answer is the candidate&apos;s</label>
+                    <select id={`qrole-${q.key}`} value={q.role ?? ""} style={{ width: "auto", padding: "4px 8px", fontSize: 12.5 }}
+                      onChange={(e) => {
+                        const role = (e.target.value || null) as QuestionRole | null;
+                        // a role belongs to one question only
+                        setQs((all) => all.map((x, j) => (j === i ? { ...x, role } : role && x.role === role ? { ...x, role: null } : x)));
+                        setQDirty(true);
+                      }}>
+                      <option value="">— (just an answer)</option>
+                      {ROLES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                    </select>
+                  </div>
                 </div>
               ))}
               <div className="row" style={{ marginTop: 14 }}>
@@ -135,7 +168,10 @@ export function SetupForm({ job, questions, googleConnected, responses }: { job:
                   {busy === "publish" || busy === "q" ? <span className="spin" /> : job.form_source === "built" && job.google_form_id ? "Save & update Google Form" : "Create Google Form"}
                 </button>
               </div>
-              <div className="note">Ask for resumes as a link. The Forms API can&apos;t hand back file-upload answers as links you can open, so candidates paste a Drive or Dropbox URL instead.</div>
+              <div className="note">
+                Ask for the CV as a link to a PDF (Google Drive or Dropbox) shared as “Anyone with the link” — that&apos;s what stage 2 reads.
+                The Forms API can&apos;t hand back file-upload answers as readable files. Mark the CV, portfolio and GitHub questions above so their answers are picked up.
+              </div>
               {job.form_source === "built" && job.google_form_id && (
                 <div className="status-box">
                   <div className="row"><span className="live" /><b>Form live</b><span className="muted">· {responses} response{responses === 1 ? "" : "s"} · synced {timeAgo(job.last_synced_at)}</span></div>

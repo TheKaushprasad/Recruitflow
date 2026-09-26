@@ -27,3 +27,27 @@ test("low confidence or unclear hard filter needs review", () => {
 test("no soft weight scores zero", () => {
   assert.equal(aggregate([hard("pass")], 0.7).score, 0);
 });
+
+const rule = (action: "reject" | "flag" | "score", decision: string, weight = 0) =>
+  ({ kind: "rule" as const, action, weight, decision: decision as never, confidence: decision === "unclear" ? 0.5 : 1 });
+
+test("a failed reject-rule disqualifies; an unclear one only flags for review", () => {
+  assert.equal(aggregate([soft(100, "meets"), rule("reject", "fail")], 0.7).disqualified, true);
+  const unclear = aggregate([soft(100, "meets"), rule("reject", "unclear")], 0.7);
+  assert.equal(unclear.disqualified, false);
+  assert.equal(unclear.needsReview, true);
+});
+
+test("a failed flag-rule marks for review without rejecting", () => {
+  const r = aggregate([soft(100, "meets"), rule("flag", "fail")], 0.7);
+  assert.equal(r.disqualified, false);
+  assert.equal(r.needsReview, true);
+  assert.equal(r.score, 100);
+});
+
+test("score-rules add weighted points; rules don't lower AI confidence", () => {
+  const r = aggregate([soft(50, "meets"), rule("score", "fail", 50)], 0.7);
+  assert.equal(r.score, 50);
+  assert.equal(r.confidence, 0.9);
+  assert.equal(aggregate([soft(50, "meets"), rule("score", "pass", 50)], 0.7).score, 100);
+});

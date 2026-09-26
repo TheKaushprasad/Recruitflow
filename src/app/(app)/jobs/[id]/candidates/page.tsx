@@ -1,4 +1,5 @@
 import { requireUser } from "@/lib/supabase/server";
+import { activeProvider, PROVIDER_LABEL } from "@/lib/ai/provider";
 import { getCandidates, getJob, getRubrics, getStages } from "@/lib/data";
 import { CandidatesTable } from "./CandidatesTable";
 import type { EmailTemplate } from "@/lib/types";
@@ -29,6 +30,7 @@ export default async function CandidatesPage({ params, searchParams }: PageProps
       templates={templates}
       initialFilter={typeof sp.f === "string" ? sp.f : "all"}
       openId={typeof sp.c === "string" ? sp.c : null}
+      aiName={PROVIDER_LABEL[activeProvider() ?? "claude"]}
     />
   );
 }

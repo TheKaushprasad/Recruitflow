@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { activeProvider, PROVIDER_LABEL } from "@/lib/ai/provider";
 import { requireUser } from "@/lib/supabase/server";
 import { getCandidates, getInterviews, getJob, getRelatedJobs, getRubrics, getStages } from "@/lib/data";
 import { RelatedJobs } from "@/components/RelatedJobs";
@@ -37,9 +38,10 @@ export default async function JobOverview({ params }: PageProps<"/jobs/[id]">) {
   const hasForm = Boolean(job.google_form_id || job.sheet_id);
   const calStages = new Set(stages.filter((s) => s.prompt_calendar).map((s) => s.id));
   const threshold = Number(job.recheck_threshold);
+  const ai = PROVIDER_LABEL[activeProvider() ?? "claude"];
 
   const attn: { sev?: "bad"; title: string; detail: string; href: string; cta: string }[] = [];
-  if (!job.description.trim()) attn.push({ title: "Add the job description", detail: "Claude builds the scoring rubric from it.", href: `${base}/setup`, cta: "Open job setup" });
+  if (!job.description.trim()) attn.push({ title: "Add the job description", detail: `${ai} builds the scoring rubric from it.`, href: `${base}/setup`, cta: "Open job setup" });
   if (!hasForm) attn.push({ title: "No application form yet", detail: "Build one here or link an existing Google Form and its response Sheet.", href: `${base}/setup`, cta: "Set up form" });
   if (!rubrics.current) attn.push({ title: rubrics.draft ? "Draft rubric waiting for your approval" : "No rubric yet", detail: "Nobody is scored until a rubric is approved.", href: `${base}/rubric`, cta: "Review rubric" });
   else if (rubrics.draft) attn.push({ title: `Rubric v${rubrics.draft.version} has unapproved changes`, detail: `Scores still use v${rubrics.current.version}.`, href: `${base}/rubric`, cta: "Review changes" });
@@ -48,7 +50,7 @@ export default async function JobOverview({ params }: PageProps<"/jobs/[id]">) {
   for (const c of scored.filter((c) => c.evaluation!.disqualified && c.evaluation!.score >= 80))
     attn.push({ sev: "bad", title: `${c.name} would rank near the top but fails a hard filter`, detail: c.evaluation!.reason, href: `${base}/candidates?c=${c.id}`, cta: "View evidence" });
   for (const c of scored.filter((c) => c.evaluation!.needs_review))
-    attn.push({ title: `${c.name}: low confidence even after Claude's recheck`, detail: `At least one criterion is below ${threshold.toFixed(2)}. Read the evidence before deciding.`, href: `${base}/candidates?c=${c.id}`, cta: "View evidence" });
+    attn.push({ title: `${c.name}: low confidence even after the ${ai} recheck`, detail: `At least one criterion is below ${threshold.toFixed(2)}. Read the evidence before deciding.`, href: `${base}/candidates?c=${c.id}`, cta: "View evidence" });
   for (const c of cands.filter((c) => c.stage_id && calStages.has(c.stage_id) && !interviews.some((i) => i.candidate_id === c.id && i.stage_id === c.stage_id)))
     attn.push({ title: `${c.name} has no interview booked for ${stages.find((s) => s.id === c.stage_id)?.name}`, detail: "Schedule it from their pipeline card.", href: `${base}/pipeline`, cta: "Open pipeline" });
 
@@ -58,7 +60,11 @@ export default async function JobOverview({ params }: PageProps<"/jobs/[id]">) {
         <div>
           <p className="eyebrow">{job.title}{job.location ? ` · ${job.location}` : ""}</p>
           <h1 className="hero">
-            {scored.length ? `${scored.length} applicants ranked. ${strong} worth a conversation.` : "Waiting for your first applicants."}
+            {scored.length
+              ? `${scored.length} applicants ranked. ${strong} worth a conversation.`
+              : cands.length
+                ? `${cands.length} applicant${cands.length === 1 ? "" : "s"} in. ${rubrics.current ? "Scoring now." : "Approve a rubric to rank them."}`
+                : "Waiting for your first applicants."}
           </h1>
           <p className="lede">
             Every candidate is scored against the same rubric, criterion by criterion, with the evidence behind each decision. Nothing is sent without your say-so.
@@ -84,7 +90,7 @@ export default async function JobOverview({ params }: PageProps<"/jobs/[id]">) {
               <div style={{ fontSize: 13.5 }}>Interviews in the next 7 days</div>
             </Link>
           </div>
-          <p>Jev scores each criterion. Claude rechecks anything under {threshold.toFixed(2)} confidence. You make every call.</p>
+          <p>Jev scores each criterion. {ai} rechecks anything under {threshold.toFixed(2)} confidence. You make every call.</p>
         </div>
       </div>
 
@@ -98,10 +104,10 @@ export default async function JobOverview({ params }: PageProps<"/jobs/[id]">) {
         </Link>
         <Link className="step" href={`${base}/rubric`} style={{ textDecoration: "none" }}>
           <span className="k">02</span><h3>Understand</h3>
-          <p>Claude turns the job description and your constraints into one rubric.</p>
+          <p>{ai} turns the job description and your constraints into one rubric.</p>
           <span className="st">
             {rubrics.current
-              ? `Rubric v${rubrics.current.version} · ${rubrics.current.rubric_criteria.filter((c) => c.kind === "soft").length} criteria, ${rubrics.current.rubric_criteria.filter((c) => c.kind === "hard").length} filters`
+              ? `Rubric v${rubrics.current.version} · ${rubrics.current.rubric_criteria.filter((c) => c.kind === "rule").length} form rules, ${rubrics.current.rubric_criteria.filter((c) => c.kind === "soft").length} criteria, ${rubrics.current.rubric_criteria.filter((c) => c.kind === "hard").length} AI filters`
               : "Not approved yet"}
           </span>
         </Link>

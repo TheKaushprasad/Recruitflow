@@ -1,14 +1,16 @@
 import Link from "next/link";
+import { providerLabel } from "@/lib/ai/provider";
 import { requireUser } from "@/lib/supabase/server";
 import { getJob } from "@/lib/data";
 
-type Kind = "job" | "form" | "rubric" | "applications" | "pipeline" | "interviews" | "emails";
+type Kind = "job" | "form" | "rubric" | "applications" | "deep" | "pipeline" | "interviews" | "emails";
 interface Event { at: string; kind: Kind; title: string; detail?: string; href?: string }
 
 const KINDS: [Kind | "all", string][] = [
   ["all", "Everything"], ["job", "Job"], ["form", "Form"], ["rubric", "Rubric"], ["applications", "Applications"],
-  ["pipeline", "Pipeline"], ["interviews", "Interviews"], ["emails", "Emails"],
+  ["deep", "Stage 2 evaluations"], ["pipeline", "Pipeline"], ["interviews", "Interviews"], ["emails", "Emails"],
 ];
+const VERDICT_TEXT: Record<string, string> = { strong: "strong fit", possible: "possible fit", weak: "weak fit" };
 
 const fmt = (d: string) => new Date(d).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 const day = (d: string) => new Date(d).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "long", year: "numeric" });
@@ -21,7 +23,7 @@ export default async function HistoryPage({ params, searchParams }: PageProps<"/
   const job = await getJob(supabase, id);
   const base = `/jobs/${id}`;
 
-  const [parent, evs, rubrics, cands, moves, ivs, mails] = await Promise.all([
+  const [parent, evs, rubrics, cands, moves, ivs, mails, deeps] = await Promise.all([
     job.based_on_job_id ? supabase.from("jobs").select("id, title").eq("id", job.based_on_job_id).maybeSingle().then((r) => r.data) : null,
     supabase.from("job_events").select("*").eq("job_id", id).then((r) => r.data ?? []),
     supabase.from("rubrics").select("id, version, status, source, created_at, approved_at").eq("job_id", id).then((r) => r.data ?? []),
@@ -29,6 +31,7 @@ export default async function HistoryPage({ params, searchParams }: PageProps<"/
     supabase.from("stage_moves").select("*").eq("job_id", id).order("moved_at", { ascending: false }).limit(500).then((r) => r.data ?? []),
     supabase.from("interviews").select("id, candidate_id, starts_at, created_at, duration_min, stages(name)").eq("job_id", id).then((r) => r.data ?? []),
     supabase.from("email_sends").select("id, candidate_id, subject, status, sent_at").eq("job_id", id).then((r) => r.data ?? []),
+    supabase.from("deep_evaluations").select("id, candidate_id, status, score, verdict, disqualified, error, created_at, finished_at").eq("job_id", id).then((r) => r.data ?? []),
   ]);
   const nameOf = new Map(cands.map((c) => [c.id, c.name]));
   const events: Event[] = [];
@@ -37,8 +40,22 @@ export default async function HistoryPage({ params, searchParams }: PageProps<"/
   const EV_TITLE: Record<string, string> = { closed: "Job closed", reopened: "Job reopened", form_published: "Google Form created and published", form_updated: "Google Form updated", form_linked: "Existing form linked" };
   for (const e of evs) events.push({ at: e.at, kind: e.kind.startsWith("form") ? "form" : "job", title: EV_TITLE[e.kind] ?? e.kind, detail: e.detail ?? undefined });
 
+  for (const d of deeps) {
+    const who = nameOf.get(d.candidate_id) ?? "A candidate";
+    events.push({
+      at: d.finished_at ?? d.created_at,
+      kind: "deep",
+      title:
+        d.status === "done" ? `${who} evaluated on CV and links: ${d.score}${d.disqualified ? " (fails a hard filter)" : `, ${VERDICT_TEXT[d.verdict ?? ""] ?? ""}`}`
+        : d.status === "error" ? `Stage 2 evaluation of ${who} failed`
+        : `Stage 2 evaluation of ${who} started`,
+      detail: d.status === "error" ? d.error ?? undefined : undefined,
+      href: `${base}/candidates?c=${d.candidate_id}`,
+    });
+  }
+
   for (const r of rubrics) {
-    events.push({ at: r.created_at, kind: "rubric", title: `Rubric v${r.version} ${r.source === "claude" ? "drafted by Claude" : "created by you"}`, href: `${base}/rubric?v=${r.version}` });
+    events.push({ at: r.created_at, kind: "rubric", title: `Rubric v${r.version} ${r.source === "recruiter" ? "created by you" : `drafted by ${providerLabel(r.source)}`}`, href: `${base}/rubric?v=${r.version}` });
     if (r.approved_at) events.push({ at: r.approved_at, kind: "rubric", title: `Rubric v${r.version} approved`, detail: "All candidates re-scored on this version", href: `${base}/rubric?v=${r.version}` });
   }
 

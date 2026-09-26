@@ -1,6 +1,8 @@
 import Link from "next/link";
+import { activeProvider, providerLabel, PROVIDER_LABEL } from "@/lib/ai/provider";
 import { requireUser } from "@/lib/supabase/server";
-import { getJob, getRubrics } from "@/lib/data";
+import { getJob, getRubrics, getRuleQuestions } from "@/lib/data";
+import { ACTION_LABEL, describeRule } from "@/lib/rules";
 import { RubricEditor } from "./RubricEditor";
 
 // Server actions on this page may score candidates in the background (after()).
@@ -14,7 +16,7 @@ export default async function RubricPage({ params, searchParams }: PageProps<"/j
   const sp = await searchParams;
   const { supabase } = await requireUser();
   const job = await getJob(supabase, id);
-  const { current, draft, all } = await getRubrics(supabase, job);
+  const [{ current, draft, all }, questions] = await Promise.all([getRubrics(supabase, job), getRuleQuestions(supabase, id)]);
   const { count } = await supabase.from("candidates").select("id", { count: "exact", head: true }).eq("job_id", id);
 
   // How many candidates were scored on each version (audit trail).
@@ -33,7 +35,7 @@ export default async function RubricPage({ params, searchParams }: PageProps<"/j
       {viewingOld ? (
         <OldVersion rubric={viewingOld} scored={scoredOn.get(viewingOld.id) ?? 0} back={base} />
       ) : (
-        <RubricEditor job={job} current={current} draft={draft} candidateCount={count ?? 0} />
+        <RubricEditor job={job} current={current} draft={draft} candidateCount={count ?? 0} aiName={PROVIDER_LABEL[activeProvider() ?? "claude"]} questions={questions} />
       )}
 
       {all.length > 0 && (
@@ -50,7 +52,7 @@ export default async function RubricPage({ params, searchParams }: PageProps<"/j
                   <span className={`chip ${r.status === "approved" ? "good" : r.status === "draft" ? "warn" : "neutral"}`}>
                     {r.status === "approved" ? "In use" : r.status === "draft" ? "Draft" : "Superseded"}
                   </span>
-                  <span className="muted">{r.source === "claude" ? "Drafted by Claude" : "Edited by you"}</span>
+                  <span className="muted">{r.source === "recruiter" ? "Edited by you" : `Drafted by ${providerLabel(r.source)}`}</span>
                   <span className="muted">{r.approved_at ? `Approved ${fmt(r.approved_at)}` : `Created ${fmt(r.created_at)}`}</span>
                   <span className="spacer" />
                   <span className="mono muted">{scoredOn.get(r.id) ?? 0} scored</span>
@@ -71,7 +73,10 @@ function OldVersion({ rubric, scored, back }: {
 }) {
   const hard = rubric.rubric_criteria.filter((c) => c.kind === "hard");
   const soft = rubric.rubric_criteria.filter((c) => c.kind === "soft");
-  const total = soft.filter((c) => c.enabled).reduce((a, c) => a + c.weight, 0);
+  const rules = rubric.rubric_criteria.filter((c) => c.kind === "rule" && c.rule);
+  const total = rubric.rubric_criteria
+    .filter((c) => c.enabled && (c.kind === "soft" || (c.kind === "rule" && c.rule?.action === "score")))
+    .reduce((a, c) => a + c.weight, 0);
   return (
     <>
       <div className="section-head">
@@ -86,7 +91,20 @@ function OldVersion({ rubric, scored, back }: {
         <Link className="pillbtn btn-ghost btn-sm" href={back} style={{ textDecoration: "none" }}>Back to current rubric</Link>
       </div>
       <div className="panel" style={{ marginBottom: 24 }}>
-        <h3 style={{ marginBottom: 6 }}>Hard filters</h3>
+        <h3 style={{ marginBottom: 6 }}>Form rules</h3>
+        {rules.length ? rules.map((r) => (
+          <div className="hard" key={r.id}>
+            <span className={`chip ${r.enabled ? "good" : "neutral"}`}>{r.enabled ? "On" : "Off"}</span>
+            <div className="x">
+              <b>{r.name}</b>
+              <div className="src">{describeRule(r.rule!)} → {ACTION_LABEL[r.rule!.action].toLowerCase()}</div>
+              {r.source_constraint && <div className="src">From constraint: “{r.source_constraint}”</div>}
+            </div>
+          </div>
+        )) : <p className="muted" style={{ fontSize: 14 }}>None.</p>}
+      </div>
+      <div className="panel" style={{ marginBottom: 24 }}>
+        <h3 style={{ marginBottom: 6 }}>AI-judged hard filters</h3>
         {hard.length ? hard.map((h) => (
           <div className="hard" key={h.id}>
             <span className={`chip ${h.enabled ? "good" : "neutral"}`}>{h.enabled ? "On" : "Off"}</span>

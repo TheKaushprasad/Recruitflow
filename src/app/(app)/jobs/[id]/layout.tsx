@@ -1,4 +1,8 @@
 import Link from "next/link";
+import { after } from "next/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { runJob } from "@/lib/pipeline";
+import { nowMs } from "@/lib/format";
 import { requireUser } from "@/lib/supabase/server";
 import { getJob } from "@/lib/data";
 import { JobTabs } from "@/components/JobTabs";
@@ -10,6 +14,15 @@ export default async function JobLayout({ children, params }: LayoutProps<"/jobs
   const job = await getJob(supabase, id);
   const { count } = await supabase.from("candidates").select("id", { count: "exact", head: true }).eq("job_id", id);
   const { data: draft } = await supabase.from("rubrics").select("id").eq("job_id", id).eq("status", "draft").maybeSingle();
+
+  // Pull new responses while the recruiter is looking, at most every 2 minutes.
+  // Keeps things fresh locally (no scheduler) and between scheduled runs in production.
+  const stale = !job.last_synced_at || nowMs() - new Date(job.last_synced_at).getTime() > 2 * 60_000;
+  if (job.status === "open" && (job.google_form_id || job.sheet_id) && stale) {
+    after(async () => {
+      await runJob(createAdminClient(), job, 8);
+    });
+  }
 
   return (
     <>

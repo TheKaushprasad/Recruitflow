@@ -1,5 +1,6 @@
 "use server";
 
+import { errorMessage } from "@/lib/errors";
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/supabase/server";
 import { googleFor } from "@/lib/google/auth";
@@ -70,7 +71,7 @@ export async function sendTemplated(jobId: string, templateId: string, candidate
           status = "sent";
           sent++;
         } catch (e) {
-          error = e instanceof Error ? e.message : String(e);
+          error = errorMessage(e);
         }
       }
       if (error) failures.push(`${c.name}: ${error}`);
@@ -85,6 +86,6 @@ export async function sendTemplated(jobId: string, templateId: string, candidate
     if (failures.length) return { ok: false, error: `Sent ${sent}. Not sent — ${failures.join("; ")}` };
     return { ok: true, message: `Sent ${sent} email${sent === 1 ? "" : "s"} from your Gmail.` };
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    return { ok: false, error: errorMessage(e) };
   }
 }

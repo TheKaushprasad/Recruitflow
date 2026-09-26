@@ -1,8 +1,10 @@
 "use client";
 
+import { providerLabel } from "@/lib/ai/provider";
 import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAction } from "./Toast";
+import { DeepPanel } from "./DeepPanel";
 import { moveCandidates } from "@/app/actions/pipeline";
 import { retryScoring } from "@/app/actions/rubric";
 import { DECISION_LABEL, confLevel } from "@/lib/format";
@@ -30,7 +32,10 @@ export function CandidateDrawer({ job, candidate: c, criteria, stages, onClose, 
     .sort((a, b) => a.crit!.position - b.crit!.position);
   const hard = results.filter((x) => x.crit!.kind === "hard");
   const soft = results.filter((x) => x.crit!.kind === "soft");
-  const totalW = soft.reduce((a, x) => a + x.crit!.weight, 0);
+  const rules = results.filter((x) => x.crit!.kind === "rule");
+  const totalW = results
+    .filter((x) => x.crit!.kind === "soft" || (x.crit!.kind === "rule" && x.crit!.rule?.action === "score"))
+    .reduce((a, x) => a + x.crit!.weight, 0);
   const version = results[0]?.crit?.version;
 
   useEffect(() => {
@@ -93,7 +98,22 @@ export function CandidateDrawer({ job, candidate: c, criteria, stages, onClose, 
           <button className="pillbtn btn-ghost btn-sm" onClick={onEmail}>Email</button>
         </div>
 
-        {hard.length > 0 && <h3 style={{ marginBottom: 10 }}>Hard filters</h3>}
+        {!e?.disqualified && (
+          <DeepPanel jobId={job.id} candidate={c} threshold={threshold} canEvaluate={!!job.current_rubric_id} />
+        )}
+
+        {e && <h3 style={{ margin: "0 0 10px", color: "var(--muted)", fontSize: 13, letterSpacing: ".08em", textTransform: "uppercase" }}>Stage 1 · Form screening</h3>}
+
+        {rules.length > 0 && <h3 style={{ marginBottom: 10 }}>Form rules</h3>}
+        {rules.map(({ r, crit }) => (
+          <Evidence key={r.id} name={crit!.name} r={r} threshold={threshold}
+            weight={crit!.rule?.action === "score" && totalW ? Math.round((crit!.weight / totalW) * 100) : undefined}
+            note={crit!.rule?.action === "reject" ? "reject if not met" : crit!.rule?.action === "flag" ? "flag if not met" : undefined} />
+        ))}
+        {e && rules.length > 0 && hard.length + soft.length === 0 && e.disqualified && (
+          <p className="hint" style={{ margin: "0 0 12px" }}>AI screening was skipped because a form rule rejected this candidate.</p>
+        )}
+        {hard.length > 0 && <h3 style={{ margin: rules.length ? "22px 0 10px" : "0 0 10px" }}>AI-judged filters</h3>}
         {hard.map(({ r, crit }) => <Evidence key={r.id} name={crit!.name} r={r} threshold={threshold} />)}
         {soft.length > 0 && <h3 style={{ margin: "22px 0 10px" }}>Criterion by criterion</h3>}
         {soft.map(({ r, crit }) => (
@@ -104,18 +124,32 @@ export function CandidateDrawer({ job, candidate: c, criteria, stages, onClose, 
         {c.answers.map((a, i) => (
           <div className="answer" key={i}><small>{a.question}</small>{a.answer || <span className="muted">(blank)</span>}</div>
         ))}
-        <p className="hint">The resume is linked for context only. PDF contents aren&apos;t parsed or scored in this version.</p>
+        <p className="hint">Stage 1 uses these answers only. The CV, portfolio and GitHub are read in stage 2, when you click Evaluate.</p>
       </aside>
     </div>
   );
 }
 
-function Evidence({ name, weight, r, threshold }: {
+function Evidence({ name, weight, r, threshold, note }: {
   name: string;
   weight?: number;
   r: { decision: string; confidence: number; evidence: string; scored_by: string; initial_confidence: number | null };
   threshold: number;
+  note?: string;
 }) {
+  if (r.scored_by === "rule") {
+    const label = r.decision === "pass" ? ["Met", "good"] : r.decision === "fail" ? ["Not met", "bad"] : ["Needs a look", "warn"];
+    return (
+      <div className="ev">
+        <div className="h">
+          <b>{name}{weight != null && <span className="mono muted" style={{ fontWeight: 400 }}> · {weight}%</span>}{note && <span className="muted" style={{ fontWeight: 400 }}> · {note}</span>}</b>
+          <span className={`chip ${label[1]}`}>{label[0]}</span>
+        </div>
+        <q>{r.evidence}</q>
+        <div className="h"><span className="meta">Checked exactly against the form answer</span></div>
+      </div>
+    );
+  }
   const [dl, dk] = DECISION_LABEL[r.decision] ?? [r.decision, "neutral"];
   const conf = Number(r.confidence);
   const [, ck] = confLevel(conf, threshold);
@@ -128,7 +162,7 @@ function Evidence({ name, weight, r, threshold }: {
       <q>{r.evidence || "No evidence recorded."}</q>
       <div className="h">
         <span className="meta">
-          {r.initial_confidence != null ? `Jev ${Number(r.initial_confidence).toFixed(2)} → rechecked by Claude` : r.scored_by === "jev" ? "Scored by Jev · evidence by Claude" : "Scored by Claude"}
+          {r.initial_confidence != null ? `Jev ${Number(r.initial_confidence).toFixed(2)} → rechecked by ${providerLabel(r.scored_by)}` : r.scored_by === "jev" ? "Scored by Jev · evidence by the AI reviewer" : `Scored by ${providerLabel(r.scored_by)}`}
         </span>
         <span className="confbar"><i style={{ ["--w" as string]: `${Math.round(conf * 100)}%`, ["--c" as string]: `var(--${ck})` }} />{conf.toFixed(2)}</span>
       </div>

@@ -1,9 +1,12 @@
 "use client";
 
+import { providerLabel } from "@/lib/ai/provider";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAction } from "@/components/Toast";
 import { CandidateDrawer } from "@/components/CandidateDrawer";
+import { VERDICT, deepRunning } from "@/components/DeepPanel";
+import { startDeepEvaluation } from "@/app/actions/deep";
 import { SendEmailModal } from "@/components/SendEmailModal";
 import { SyncButton } from "@/components/SyncButton";
 import { moveCandidates, exportResults } from "@/app/actions/pipeline";
@@ -14,6 +17,8 @@ import type { Criterion, EmailTemplate, Job, Stage } from "@/lib/types";
 
 const FILTERS = [
   ["all", "All"],
+  ["shortlist", "Shortlist"],
+  ["evaluated", "Deep evaluated"],
   ["qualified", "Qualified"],
   ["review", "Needs review"],
   ["rechecked", "Rechecked"],
@@ -31,6 +36,7 @@ export function CandidatesTable(props: {
   templates: EmailTemplate[];
   initialFilter: string;
   openId: string | null;
+  aiName: string;
 }) {
   const { job, candidates, stages } = props;
   const router = useRouter();
@@ -45,6 +51,8 @@ export function CandidatesTable(props: {
   const match = (c: CandidateRow, f: string) => {
     const e = c.evaluation && !c.stale ? c.evaluation : null;
     switch (f) {
+      case "shortlist": return c.shortlisted;
+      case "evaluated": return !!c.deep && c.deep.status === "done";
       case "qualified": return !!e && !e.disqualified;
       case "review": return !!e && e.needs_review;
       case "rechecked": return !!e && e.criterion_results.some((r) => r.initial_confidence != null);
@@ -54,12 +62,32 @@ export function CandidatesTable(props: {
       default: return true;
     }
   };
+  const [sortBy, setSortBy] = useState<"stage1" | "deep">("stage1");
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    return candidates.filter(
+    const list = candidates.filter(
       (c) => match(c, filter) && (!needle || `${c.name} ${c.email ?? ""} ${c.answers.map((a) => a.answer).join(" ")}`.toLowerCase().includes(needle)),
     );
-  }, [candidates, q, filter]);
+    if (sortBy === "deep") {
+      const deepScore = (c: CandidateRow) =>
+        c.deep?.status === "done" && !c.deepStale ? (c.deep.disqualified ? -1 : c.deep.score ?? -1) : -2;
+      return [...list].sort((a, b) => deepScore(b) - deepScore(a)); // stable: ties keep stage-1 order
+    }
+    return list;
+  }, [candidates, q, filter, sortBy]);
+
+  // Refresh while stage-2 evaluations are running.
+  const anyRunning = candidates.some((c) => deepRunning(c.deep));
+  useEffect(() => {
+    if (!anyRunning) return;
+    const t = setInterval(() => router.refresh(), 5000);
+    return () => clearInterval(t);
+  }, [anyRunning, router]);
+
+  const evaluate = async (ids: string[]) => {
+    const r = await run(() => startDeepEvaluation(job.id, ids));
+    if (r.ok) { setSel(new Set()); router.refresh(); }
+  };
   const counts = useMemo(() => Object.fromEntries(FILTERS.map(([k]) => [k, candidates.filter((c) => match(c, k)).length])), [candidates]);
 
   const toggle = (id: string, on: boolean) => {
@@ -105,6 +133,10 @@ export function CandidatesTable(props: {
             <button key={k} aria-pressed={filter === k} onClick={() => setFilter(k)}>{l} <span className="mono">{counts[k]}</span></button>
           ))}
         </div>
+        <select id="sortBy" aria-label="Sort by" value={sortBy} onChange={(e) => setSortBy(e.target.value as "stage1" | "deep")} style={{ width: "auto", padding: "7px 10px", fontSize: 13, borderRadius: 99 }}>
+          <option value="stage1">Sort: stage 1 score</option>
+          <option value="deep">Sort: stage 2 score</option>
+        </select>
         <div className="bulk">
           {sel.size ? (
             <>
@@ -119,10 +151,13 @@ export function CandidatesTable(props: {
                   setSel(new Set()); router.refresh();
                 }}>Add to pipeline</button>
               )}
+              <button className="pillbtn btn-lime btn-sm" disabled={pending || !props.currentVersion || sel.size > 10}
+                title={sel.size > 10 ? "Evaluate up to 10 at a time" : undefined}
+                onClick={() => evaluate([...sel])}>Evaluate {sel.size} (CV + links)</button>
               <button className="pillbtn btn-dark btn-sm" onClick={() => setMailTo([...sel])}>Email {sel.size}</button>
             </>
           ) : (
-            <span className="muted">Select candidates to email or add to the pipeline</span>
+            <span className="muted">Select candidates to evaluate, email or add to the pipeline</span>
           )}
         </div>
       </div>
@@ -133,7 +168,7 @@ export function CandidatesTable(props: {
             <tr>
               <th><input type="checkbox" aria-label="Select all shown" checked={rows.length > 0 && rows.every((c) => sel.has(c.id))}
                 onChange={(e) => { const s = new Set(sel); rows.forEach((c) => (e.target.checked ? s.add(c.id) : s.delete(c.id))); setSel(s); }} /></th>
-              <th>#</th><th>Candidate</th><th>Score</th><th>Confidence</th><th>Why they ranked here</th><th>Status</th>
+              <th>#</th><th>Candidate</th><th>Stage 1 score</th><th>Confidence</th><th>Stage 2 · CV &amp; links</th><th>Why they ranked here</th><th>Status</th>
             </tr>
           </thead>
           <tbody>
@@ -152,9 +187,39 @@ export function CandidatesTable(props: {
                   <td>{e ? (
                     <>
                       <span className={`chip ${ck}`}>{cl} <span className="mono">{Number(e.confidence).toFixed(2)}</span></span>
-                      {rechecked > 0 && <div className="hint" style={{ marginTop: 4 }}>↻ {rechecked} rechecked by Claude</div>}
+                      {rechecked > 0 && <div className="hint" style={{ marginTop: 4 }}>↻ {rechecked} rechecked by {providerLabel(e!.criterion_results.find((r) => r.initial_confidence != null)?.scored_by)}</div>}
                     </>
                   ) : null}</td>
+                  <td>
+                    {c.deep && deepRunning(c.deep) ? (
+                      <span className="chip neutral"><span className="spin" /> Evaluating</span>
+                    ) : c.deep?.status === "done" ? (
+                      <div style={{ display: "grid", gap: 4, opacity: c.deepStale ? 0.6 : 1 }}>
+                        <span className="row" style={{ gap: 6, flexWrap: "nowrap" }}>
+                          <b className="mono">{c.deep.score}</b>
+                          <span className={`chip ${c.deep.disqualified ? "bad" : VERDICT[c.deep.verdict ?? ""]?.[1] ?? "neutral"}`}>
+                            {c.deep.disqualified ? "Hard filter" : VERDICT[c.deep.verdict ?? ""]?.[0] ?? "Done"}
+                          </span>
+                        </span>
+                        {c.deepStale && <span className="hint" style={{ margin: 0 }}>older rubric</span>}
+                      </div>
+                    ) : e?.disqualified ? (
+                      <span className="muted">—</span>
+                    ) : (
+                      <div style={{ display: "grid", gap: 4, justifyItems: "start" }}>
+                        <button
+                          className={`pillbtn ${c.shortlisted ? "btn-lime" : "btn-ghost"} btn-sm`}
+                          disabled={pending || !props.currentVersion || !(c.resume_url || c.portfolio_url || c.github_url)}
+                          title={!(c.resume_url || c.portfolio_url || c.github_url) ? "No CV, portfolio or GitHub link — add one in their profile" : "Read CV, portfolio and GitHub against the JD and rubric"}
+                          onClick={(ev) => { ev.stopPropagation(); evaluate([c.id]); }}
+                        >
+                          {c.deep?.status === "error" ? "Retry" : "Evaluate"}
+                        </button>
+                        {c.deep?.status === "error" && <span className="error-text" style={{ fontSize: 12 }}>Last run failed</span>}
+                        {c.shortlisted && !c.deep && <span className="hint" style={{ margin: 0 }}>Shortlisted</span>}
+                      </div>
+                    )}
+                  </td>
                   <td className="reason">
                     {c.score_status === "error" ? <span className="error-text">Scoring failed: {c.score_error}</span>
                       : !e ? <span>{c.score_status === "scoring" ? "Scoring now…" : props.currentVersion ? "Waiting to be scored" : "Waiting for an approved rubric"}</span>
@@ -162,7 +227,7 @@ export function CandidatesTable(props: {
                       : e.reason}
                   </td>
                   <td>
-                    {e?.disqualified ? <span className="chip bad">✕ Hard filter</span>
+                    {e?.disqualified ? <span className="chip bad">✕ {e.criterion_results.some((r) => r.scored_by === "rule" && r.decision === "fail") ? "Form rule" : "Hard filter"}</span>
                       : c.stage_id ? <span className="chip good">{stageName(c.stage_id)}</span>
                       : <span className="chip neutral">Not in pipeline</span>}
                   </td>
@@ -170,14 +235,17 @@ export function CandidatesTable(props: {
               );
             })}
             {!rows.length && (
-              <tr><td colSpan={7} className="muted" style={{ textAlign: "center", padding: 40 }}>
+              <tr><td colSpan={8} className="muted" style={{ textAlign: "center", padding: 40 }}>
                 {candidates.length ? "No candidates match. Clear the search or pick another filter." : "No applications yet. Share your form link — responses appear here within a few minutes."}
               </td></tr>
             )}
           </tbody>
         </table>
       </div>
-      <p className="hint">Score = weighted share of criteria met (borderline counts half). Jev scores each criterion; Claude rechecks anything under {threshold.toFixed(2)} confidence and writes the evidence.</p>
+      <p className="hint">
+        Stage 1 screens everyone on their form answers: score = weighted share of criteria met (borderline counts half); Jev scores each criterion and {props.aiName} rechecks anything under {threshold.toFixed(2)} confidence.
+        Candidates scoring {job.shortlist_threshold}+ (or needing review) are shortlisted. Stage 2 runs only when you click Evaluate: {props.aiName} reads their CV, portfolio and GitHub against the JD and rubric.
+      </p>
 
       {opened && (
         <CandidateDrawer

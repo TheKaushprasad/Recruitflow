@@ -1,5 +1,6 @@
 "use server";
 
+import { errorMessage } from "@/lib/errors";
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/supabase/server";
 import { googleFor } from "@/lib/google/auth";
@@ -10,7 +11,7 @@ import type { Job, Stage } from "@/lib/types";
 import type { ActionResult } from "./jobs";
 
 function fail(e: unknown): ActionResult {
-  return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  return { ok: false, error: errorMessage(e) };
 }
 
 export async function moveCandidates(jobId: string, candidateIds: string[], stageId: string | null): Promise<ActionResult> {
@@ -68,7 +69,7 @@ export async function getBusy(dateIso: string): Promise<{ ok: true; busy: { star
     const end = new Date(day.getTime() + 24 * 3600_000);
     return { ok: true, busy: await busyTimes(auth, day, end) };
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    return { ok: false, error: errorMessage(e) };
   }
 }
 
@@ -146,8 +147,10 @@ export async function exportResults(jobId: string): Promise<ActionResult> {
     const cands = await getCandidates(supabase, job);
     const soft = current.rubric_criteria.filter((c) => c.kind === "soft" && c.enabled);
     const hard = current.rubric_criteria.filter((c) => c.kind === "hard" && c.enabled);
-    const header = ["Rank", "Name", "Email", "Score", "Confidence", "Disqualified", "Needs review", "Reason",
-      ...hard.map((h) => `[Filter] ${h.name}`), ...soft.map((s) => s.name)];
+    const rules = current.rubric_criteria.filter((c) => c.kind === "rule" && c.enabled);
+    const header = ["Rank", "Name", "Email", "Stage 1 score", "Confidence", "Disqualified", "Needs review", "Reason",
+      ...rules.map((r) => `[Form rule] ${r.name}`), ...hard.map((h) => `[Filter] ${h.name}`), ...soft.map((s) => s.name),
+      "Stage 2 score", "Stage 2 verdict", "Stage 2 summary"];
     const rows = cands
       .filter((c) => c.evaluation && !c.stale)
       .map((c) => {
@@ -156,9 +159,11 @@ export async function exportResults(jobId: string): Promise<ActionResult> {
           const r = e.criterion_results.find((x) => x.criterion_id === id);
           return r ? `${r.decision} (${Number(r.confidence).toFixed(2)}) — ${r.evidence}` : "";
         };
+        const d = c.deep?.status === "done" && !c.deepStale ? c.deep : null;
         return [c.rank ?? "", c.name, c.email ?? "", e.score, Number(e.confidence).toFixed(2),
           e.disqualified ? "yes" : "", e.needs_review ? "yes" : "", e.reason,
-          ...hard.map((h) => res(h.id)), ...soft.map((s) => res(s.id))];
+          ...rules.map((r) => res(r.id)), ...hard.map((h) => res(h.id)), ...soft.map((s) => res(s.id)),
+          d?.score ?? "", d ? (d.disqualified ? "hard filter" : d.verdict ?? "") : "", d?.summary ?? ""];
       });
 
     const { auth } = await googleFor(user.id);

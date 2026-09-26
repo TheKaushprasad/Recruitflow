@@ -1,5 +1,6 @@
 "use server";
 
+import { errorMessage } from "@/lib/errors";
 import { after } from "next/server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
@@ -9,12 +10,12 @@ import { googleFor } from "@/lib/google/auth";
 import { setAcceptingResponses, upsertForm } from "@/lib/google/forms";
 import { parseFormId, parseSheetId, readResponseRows } from "@/lib/google/sheets";
 import { runJob } from "@/lib/pipeline";
-import type { FormQuestion, Job, QuestionType } from "@/lib/types";
+import type { FormQuestion, Job, QuestionRole, QuestionType } from "@/lib/types";
 
 export type ActionResult = { ok: true; message?: string } | { ok: false; error: string };
 
 function fail(e: unknown): ActionResult {
-  return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  return { ok: false, error: errorMessage(e) };
 }
 
 const DEFAULT_STAGES = [
@@ -25,13 +26,17 @@ const DEFAULT_STAGES = [
   { name: "Offer", prompt_calendar: false },
 ];
 
-const DEFAULT_QUESTIONS: { title: string; type: QuestionType; required: boolean; role?: "name" | "email" | "resume"; options?: string[] }[] = [
+const DEFAULT_QUESTIONS: { title: string; type: QuestionType; required: boolean; role?: QuestionRole; options?: string[] }[] = [
   { title: "Full name", type: "short", required: true, role: "name" },
   { title: "Email", type: "short", required: true, role: "email" },
   { title: "Current city", type: "short", required: true },
+  // Non-overlapping ranges so a rule like "at least 3 years" is an exact yes/no.
+  { title: "Years of relevant experience", type: "dropdown", required: true, options: ["Less than 1 year", "1–2 years", "3–5 years", "6–8 years", "More than 8 years"] },
   { title: "Notice period", type: "dropdown", required: true, options: ["Immediate", "15 days", "30 days", "45 days", "60 days", "90 days or more"] },
   { title: "Tell us about the most relevant project you've worked on", type: "paragraph", required: true },
-  { title: "Link to your resume (Drive, Dropbox or similar)", type: "short", required: true, role: "resume" },
+  { title: "Link to your CV as a PDF (Google Drive or Dropbox, shared as “Anyone with the link”)", type: "short", required: true, role: "resume" },
+  { title: "Portfolio or personal website (optional)", type: "short", required: false, role: "portfolio" },
+  { title: "GitHub profile (optional)", type: "short", required: false, role: "github" },
 ];
 
 /**
@@ -88,7 +93,7 @@ export async function createJob(formData: FormData) {
   if (source?.current_rubric_id && copy("rubric")) {
     const { data: crit } = await supabase
       .from("rubric_criteria")
-      .select("position, kind, name, description, weight, source_constraint, bias_flag, enabled")
+      .select("position, kind, name, description, weight, source_constraint, bias_flag, enabled, rule")
       .eq("rubric_id", source.current_rubric_id);
     const { data: rubric } = await supabase
       .from("rubrics")
@@ -197,10 +202,15 @@ export async function syncNow(jobId: string): Promise<ActionResult> {
   return { ok: true, message: "Syncing responses and scoring in the background — refresh in a minute." };
 }
 
-export async function updateJobSettings(jobId: string, patch: { recheck_threshold?: number; require_signoff?: boolean }): Promise<ActionResult> {
+export async function updateJobSettings(
+  jobId: string,
+  patch: { recheck_threshold?: number; require_signoff?: boolean; shortlist_threshold?: number },
+): Promise<ActionResult> {
   const { supabase } = await requireUser();
   if (patch.recheck_threshold != null && (patch.recheck_threshold < 0.5 || patch.recheck_threshold > 0.95))
     return { ok: false, error: "Threshold must be between 0.50 and 0.95." };
+  if (patch.shortlist_threshold != null && (patch.shortlist_threshold < 0 || patch.shortlist_threshold > 100))
+    return { ok: false, error: "Shortlist score must be between 0 and 100." };
   const { error } = await supabase.from("jobs").update(patch).eq("id", jobId);
   if (error) return fail(error);
   revalidatePath(`/jobs/${jobId}`, "layout");

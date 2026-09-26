@@ -310,3 +310,4 @@ nav.tabs a.tab[aria-current="page"]{color:var(--ink);border-bottom-color:var(--g
 .k-pipeline .tl-dot{background:var(--green-2)}
 .k-interviews .tl-dot{background:var(--warn)}
 .k-emails .tl-dot{background:var(--muted)}
+.k-deep .tl-dot{background:var(--green-ink)}

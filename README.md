@@ -2,20 +2,27 @@
 
 Rubric-based candidate screening. A recruiter links a job description to a Google Form. Every applicant is scored against one rubric, criterion by criterion, with evidence for each decision. Candidates then move through an interview pipeline, and invites and emails go out from the recruiter's own Google account.
 
-**Stack:** Next.js 16 (App Router) · Supabase (Postgres, Auth, RLS, Realtime) · Claude (rubric drafting, low-confidence rechecks, evidence) · Jev by TypeSafe AI (per-criterion decisions) · Google Forms / Sheets / Gmail / Calendar APIs.
+**Stack:** Next.js 16 (App Router) · Supabase (Postgres, Auth, RLS, Realtime) · OpenAI or Claude (rubric drafting, rechecks, evidence, CV review — set with `AI_PROVIDER`) · Jev by TypeSafe AI (per-criterion decisions) · Google Forms / Sheets / Gmail / Calendar APIs.
 
-## How scoring works
+## How screening works
 
-1. **Rubric.** Claude turns the job description and your constraints into hard filters and weighted criteria. Each version is stored. Once approved, a version is locked, so every score can be traced back to it.
-2. **Ingest.** New responses are pulled every few minutes, or straight away with **Sync now**. In-app forms are read through the Forms API; linked forms are read from their response Sheet.
-3. **Score.** Jev returns a typed decision and a calibrated confidence for each criterion. When a confidence falls below the job's threshold (0.70 by default), Claude rechecks that criterion. Claude also writes the evidence sentence for every criterion. Without a Jev key, Claude scores everything.
-4. **Aggregate.** The score is the weighted share of criteria met, with borderline counting as half. Failing a hard filter disqualifies the candidate and is shown separately; it never reduces the score. Low confidence marks a candidate as needing review.
-5. **Re-score.** Approving a new rubric version re-scores every candidate. Until that finishes, their old scores are shown faded.
+1. **Rubric.** The AI turns the job description and your constraints into a rubric with three kinds of item:
+   - **Form rules:** exact checks on a form answer, e.g. years of experience at least 3, or notice period one of Immediate…60 days. Each rule rejects, flags for review, or adds to the score. The AI suggests them from your constraints and maps each one to the right form question; you edit or approve them.
+   - **AI-judged filters:** constraints that can't be read from a single field.
+   - **Scored criteria:** weighted skills from the JD.
+
+   Each rubric version is stored, and approved versions are locked, so every score can be traced back to its version.
+2. **Ingest.** New responses are pulled every few minutes, whenever you open a job, or straight away with **Sync now**.
+3. **Stage 1a: form rules (every applicant, instant, no AI).** Failing a "reject" rule stops the candidate here, so no AI cost is spent on them. Blank or unreadable answers are flagged for review, never rejected.
+4. **Stage 1b: AI screening of form answers.** Jev decides each criterion with a calibrated confidence. Anything below the threshold (0.70 by default) is rechecked by the AI, which also writes the evidence for every decision. If only rules or weights changed between rubric versions, earlier AI results are reused, so the rescoring costs nothing.
+5. **Shortlist.** A stage-1 score at or above the job's cut-off (60 by default), or a "needs review" flag, marks the candidate as Shortlisted.
+6. **Stage 2: deep evaluation (when you click Evaluate).** The AI reads the JD, the CV (PDF, Google Drive/Docs, Dropbox), the form answers, the portfolio site and the GitHub profile together. Form rules are passed in as fixed facts. You get a suitability score, a verdict, strengths, concerns, per-criterion evidence tagged by source, and interview questions.
+7. **Scoring maths.** The score is the weighted share of criteria and score-rules met; borderline or unclear counts as half. Failing a hard filter or a reject-rule disqualifies the candidate, and this is shown separately.
 
 ## Setup
 
 ### 1. Supabase
-1. Create a project. In the SQL editor, run the files in `supabase/migrations/` in order: `0001_init.sql`, `0002_job_lifecycle.sql`, `0003_related_jobs.sql`.
+1. Create a project. In the SQL editor, run every file in `supabase/migrations/` in order (`0001_init.sql` … `0006_form_rules.sql`).
 2. Go to **Authentication → URL configuration** and set Site URL to your `APP_URL`. Add `APP_URL/auth/callback` as a redirect URL.
 3. Optional: under **Authentication → Providers**, enable Google sign-in. This is only for logging in; the Google data connection is set up separately (next section).
 
@@ -39,7 +46,7 @@ Sign in, open **Integrations → Connect Google**, then create a job.
 
 ### 5. Scheduler
 `GET /api/cron` with header `Authorization: Bearer $CRON_SECRET` syncs responses and scores pending candidates for every job.
-- **Vercel:** `vercel.json` already schedules it every 5 minutes. Vercel sends `CRON_SECRET` automatically once it's set as a project env var. Every-5-minutes schedules need a Pro plan.
+- **Vercel:** `vercel.json` schedules it once a day (00:30 UTC), which is the most often the free Hobby plan allows; more frequent schedules make Hobby deploys fail. Vercel sends `CRON_SECRET` automatically once it's set as a project env var. Responses are also pulled whenever a recruiter opens a job, and immediately with **Sync now**. On Pro, change the schedule to `*/5 * * * *` for 5-minute syncing, or keep Hobby and add an external scheduler (below).
 - **Elsewhere:** call the endpoint on a schedule from Supabase `pg_cron` + `pg_net`, cron-job.org, or a similar service.
 
 ## Managing jobs

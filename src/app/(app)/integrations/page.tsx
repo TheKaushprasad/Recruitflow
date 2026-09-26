@@ -1,4 +1,5 @@
 import { requireUser } from "@/lib/supabase/server";
+import { activeModel, activeProvider, PROVIDER_LABEL } from "@/lib/ai/provider";
 import { DisconnectGoogle } from "./DisconnectGoogle";
 
 const MESSAGES: Record<string, [string, "ok" | "bad"]> = {
@@ -21,7 +22,8 @@ export default async function IntegrationsPage({ searchParams }: PageProps<"/int
   const { data: conn } = await supabase.from("google_connection_status").select("*").maybeSingle();
   const msg = typeof sp.google === "string" ? MESSAGES[sp.google] : undefined;
   const jev = Boolean(process.env.TYPESAFE_API_KEY);
-  const claude = Boolean(process.env.ANTHROPIC_API_KEY);
+  const ai = activeProvider();
+  const aiName = ai ? PROVIDER_LABEL[ai] : "AI";
 
   return (
     <>
@@ -54,13 +56,13 @@ export default async function IntegrationsPage({ searchParams }: PageProps<"/int
         ))}
         <div className="int">
           <div className="hd"><h3>Jev (TypeSafe AI)</h3><span className={`chip ${jev ? "good" : "warn"}`}>{jev ? "Configured" : "Not configured"}</span></div>
-          <p>Scores every criterion with a calibrated confidence. {jev ? "" : "Without it, Claude scores every criterion instead (slower and more expensive)."}</p>
+          <p>Scores every criterion with a calibrated confidence. {jev ? "" : `Without it, ${aiName} scores every criterion instead (slower and more expensive).`}</p>
           <div><code>TYPESAFE_API_KEY</code></div>
         </div>
         <div className="int">
-          <div className="hd"><h3>Claude</h3><span className={`chip ${claude ? "good" : "bad"}`}>{claude ? "Configured" : "Missing"}</span></div>
-          <p>Drafts rubrics, rechecks low-confidence scores and writes the evidence for every decision.</p>
-          <div><code>ANTHROPIC_API_KEY</code></div>
+          <div className="hd"><h3>AI reviewer</h3><span className={`chip ${ai ? "good" : "bad"}`}>{ai ? `${aiName} · configured` : "Missing"}</span></div>
+          <p>Drafts rubrics, rechecks low-confidence scores and writes the evidence for every decision. Choose it with AI_PROVIDER (openai or claude).</p>
+          <div><code>{ai ? `${ai === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY"} · ${activeModel(ai)}` : "OPENAI_API_KEY or ANTHROPIC_API_KEY"}</code></div>
         </div>
       </div>
 
@@ -68,7 +70,7 @@ export default async function IntegrationsPage({ searchParams }: PageProps<"/int
       <div className="flow">
         <div><b>New response</b><span>Forms API or linked Sheet, polled</span></div>
         <div><b>Score each criterion</b><span>Jev · decision + confidence</span></div>
-        <div><b>Recheck if low</b><span>Claude · with evidence</span></div>
+        <div><b>Recheck if low</b><span>{aiName} · with evidence</span></div>
         <div><b>Aggregate &amp; store</b><span>Supabase · your rows only</span></div>
         <div><b>Ranked table</b><span>Updates live</span></div>
       </div>

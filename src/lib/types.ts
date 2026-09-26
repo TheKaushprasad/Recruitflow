@@ -1,3 +1,5 @@
+import type { FormRule } from "./rules";
+
 export type FormSource = "built" | "linked";
 
 export interface Job {
@@ -20,6 +22,7 @@ export interface Job {
   status: "open" | "closed";
   closed_at: string | null;
   based_on_job_id: string | null;
+  shortlist_threshold: number;
   created_at: string;
 }
 
@@ -32,7 +35,7 @@ export interface Rubric {
   version: number;
   status: RubricStatus;
   bias_reviewed: boolean;
-  source: "claude" | "recruiter";
+  source: "claude" | "openai" | "recruiter";
   model: string | null;
   created_at: string;
   approved_at: string | null;
@@ -43,16 +46,21 @@ export interface Criterion {
   recruiter_id: string;
   rubric_id: string;
   position: number;
-  kind: "hard" | "soft";
+  /** hard = AI-judged filter, soft = AI-scored criterion, rule = exact check on a form answer */
+  kind: CriterionKind;
   name: string;
   description: string;
   weight: number;
   source_constraint: string | null;
   bias_flag: string | null;
   enabled: boolean;
+  rule: FormRule | null;
 }
 
+export type CriterionKind = "hard" | "soft" | "rule";
+
 export type QuestionType = "short" | "paragraph" | "choice" | "dropdown" | "checkbox" | "date";
+export type QuestionRole = "name" | "email" | "resume" | "portfolio" | "github";
 
 export interface FormQuestion {
   id: string;
@@ -62,7 +70,7 @@ export interface FormQuestion {
   type: QuestionType;
   required: boolean;
   options: string[];
-  role: "name" | "email" | "resume" | null;
+  role: QuestionRole | null;
   google_item_id: string | null;
 }
 
@@ -87,6 +95,8 @@ export interface Candidate {
   name: string;
   email: string | null;
   resume_url: string | null;
+  portfolio_url: string | null;
+  github_url: string | null;
   answers: Answer[];
   submitted_at: string | null;
   stage_id: string | null;
@@ -97,6 +107,52 @@ export interface Candidate {
 
 export type Decision = "meets" | "borderline" | "not_met" | "pass" | "fail" | "unclear";
 
+export type EvidenceSource = "form" | "cv" | "portfolio" | "github";
+
+export interface DeepResult {
+  criterion_id: string;
+  name: string;
+  kind: CriterionKind;
+  /** for rules: what failing it does */
+  action?: "reject" | "flag" | "score";
+  weight: number;
+  decision: Decision;
+  confidence: number;
+  evidence: string;
+  sources: EvidenceSource[];
+}
+
+export interface DeepSource {
+  kind: "cv" | "portfolio" | "github";
+  url: string | null;
+  status: "read" | "failed" | "missing";
+  note: string;
+}
+
+export interface DeepEvaluation {
+  id: string;
+  job_id: string;
+  candidate_id: string;
+  rubric_id: string;
+  status: "queued" | "running" | "done" | "error";
+  score: number | null;
+  confidence: number | null;
+  disqualified: boolean | null;
+  verdict: "strong" | "possible" | "weak" | null;
+  summary: string | null;
+  strengths: string[];
+  concerns: string[];
+  interview_questions: string[];
+  results: DeepResult[];
+  sources: DeepSource[];
+  source_snapshot: { cv_summary?: string; portfolio_excerpt?: string; github_summary?: string };
+  provider: string | null;
+  model: string | null;
+  error: string | null;
+  created_at: string;
+  finished_at: string | null;
+}
+
 export interface CriterionResult {
   id: string;
   evaluation_id: string;
@@ -104,7 +160,7 @@ export interface CriterionResult {
   decision: Decision;
   confidence: number;
   evidence: string;
-  scored_by: "jev" | "claude";
+  scored_by: "jev" | "claude" | "openai" | "rule";
   initial_confidence: number | null;
   probabilities: Record<string, number> | null;
 }

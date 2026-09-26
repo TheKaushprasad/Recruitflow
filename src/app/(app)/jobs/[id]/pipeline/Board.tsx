@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useAction } from "@/components/Toast";
 import { CandidateDrawer } from "@/components/CandidateDrawer";
+import { VERDICT } from "@/components/DeepPanel";
 import { SendEmailModal } from "@/components/SendEmailModal";
 import { ScheduleModal } from "./ScheduleModal";
 import { cancelInterview, moveCandidates, saveStages } from "@/app/actions/pipeline";
@@ -54,7 +55,7 @@ export function Board({ job, candidates, stages, interviews, criteria, templates
     if (stage?.prompt_calendar) setSchedule({ ...c, stage_id: stageId });
   }
 
-  const pool = candidates.filter((c) => !stageOf(c) && c.evaluation && !c.evaluation.disqualified);
+  const pool = candidates.filter((c) => !stageOf(c) && !c.evaluation?.disqualified);
   const interviewFor = (c: CandidateRow) => interviews.find((i) => i.candidate_id === c.id && i.stage_id === stageOf(c));
   const opened = candidates.find((c) => c.id === open) ?? null;
   const [loadedAt] = useState(() => Date.now());
@@ -71,7 +72,12 @@ export function Board({ job, candidates, stages, interviews, criteria, templates
           <button className="nm" onClick={() => setOpen(c.id)}>{c.name}</button>
           {e && <span className="sc">{e.score}</span>}
         </div>
-        {e && <p className="rs">{e.reason}</p>}
+        {e ? <p className="rs">{e.reason}</p> : <p className="rs">Not scored yet{c.score_status === "error" ? " — scoring failed" : ""}.</p>}
+        {c.deep?.status === "done" && !c.deepStale && (
+          <span className={`chip ${c.deep.disqualified ? "bad" : VERDICT[c.deep.verdict ?? ""]?.[1] ?? "neutral"}`} style={{ justifySelf: "start" }}>
+            Stage 2: {c.deep.score} · {c.deep.disqualified ? "hard filter" : VERDICT[c.deep.verdict ?? ""]?.[0] ?? "done"}
+          </span>
+        )}
         <div className="ft">
           {iv ? <span className="chip lime">◷ {fmtDateTime(iv.starts_at)}</span>
             : e ? <span className="chip neutral">conf {Number(e.confidence).toFixed(2)}</span> : <span />}

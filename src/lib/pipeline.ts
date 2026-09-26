@@ -1,3 +1,4 @@
+import { errorMessage } from "./errors";
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { googleFor } from "./google/auth";
@@ -11,21 +12,25 @@ import type { Candidate, FormQuestion, Job } from "./types";
 
 const NAME_RE = /(full\s*)?name/i;
 const EMAIL_RE = /e-?mail/i;
-const RESUME_RE = /resume|cv|curriculum/i;
+const RESUME_RE = /resume|\bcv\b|curriculum/i;
+const PORTFOLIO_RE = /portfolio|personal (web)?site|website|behance|dribbble/i;
+const GITHUB_RE = /github/i;
 
 function mapCandidateFields(r: RawResponse, roles: FormQuestion[]) {
-  const byRole = (role: FormQuestion["role"], re: RegExp) => {
+  const byRole = (role: FormQuestion["role"], re: RegExp, not?: RegExp) => {
     const q = roles.find((x) => x.role === role);
     const hit = q
       ? r.answers.find((a) => a.question === q.title)
-      : r.answers.find((a) => re.test(a.question) && !(role === "name" && /company|job/i.test(a.question)));
+      : r.answers.find((a) => re.test(a.question) && !(not && not.test(a.question)));
     return hit?.answer?.trim() || null;
   };
   const email = r.email ?? byRole("email", EMAIL_RE);
   return {
-    name: byRole("name", NAME_RE) ?? email ?? "Unnamed applicant",
+    name: byRole("name", NAME_RE, /company|job|github|user ?name|file/i) ?? email ?? "Unnamed applicant",
     email: email && /\S+@\S+\.\S+/.test(email) ? email : null,
     resume_url: byRole("resume", RESUME_RE),
+    portfolio_url: byRole("portfolio", PORTFOLIO_RE, GITHUB_RE),
+    github_url: byRole("github", GITHUB_RE),
   };
 }
 
@@ -64,7 +69,7 @@ export async function syncJob(db: SupabaseClient, job: Job) {
     await db.from("jobs").update({ last_synced_at: new Date().toISOString(), last_sync_error: null }).eq("id", job.id);
     return { added };
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = errorMessage(e);
     await db.from("jobs").update({ last_sync_error: msg }).eq("id", job.id);
     return { added: 0, error: msg };
   }
@@ -101,7 +106,7 @@ export async function scorePending(db: SupabaseClient, job: Job, limit = 8) {
       failed++;
       await db
         .from("candidates")
-        .update({ score_status: "error", score_error: e instanceof Error ? e.message : String(e) })
+        .update({ score_status: "error", score_error: errorMessage(e) })
         .eq("id", c.id);
     }
   }
