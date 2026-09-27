@@ -106,6 +106,9 @@ export interface Candidate {
   stage_id: string | null;
   score_status: "pending" | "scoring" | "scored" | "error";
   score_error: string | null;
+  /** Failed scoring attempts so far; retried automatically up to MAX_ATTEMPTS. */
+  score_attempts?: number;
+  next_attempt_at?: string | null;
   created_at: string;
 }
 
@@ -139,6 +142,8 @@ export interface DeepEvaluation {
   candidate_id: string;
   rubric_id: string;
   status: "queued" | "running" | "done" | "error";
+  attempts?: number;
+  next_attempt_at?: string | null;
   score: number | null;
   confidence: number | null;
   disqualified: boolean | null;

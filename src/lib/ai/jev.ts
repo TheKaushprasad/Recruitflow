@@ -3,6 +3,8 @@ import "server-only";
 // TypeSafe Jev — System One structured decisions.
 // HTTP API: POST https://api.typesafe.ai/v1/systemone  (docs.typesafe.ai/api)
 
+import { recordUsage } from "./usage";
+
 const JEV_URL = process.env.TYPESAFE_API_URL ?? "https://api.typesafe.ai/v1/systemone";
 
 export interface JevChoiceQuestion {
@@ -33,15 +35,25 @@ export async function jevDecide(
   const key = process.env.TYPESAFE_API_KEY;
   if (!key) throw new JevError("TYPESAFE_API_KEY is not set", 401);
 
+  const model = process.env.JEV_MODEL ?? "jev-latest";
+  const payload = JSON.stringify({ model, state, questions });
   // Retry 429/529 with exponential backoff, as the API docs recommend.
   for (let attempt = 0; ; attempt++) {
     const res = await fetch(JEV_URL, {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: process.env.JEV_MODEL ?? "jev-latest", state, questions }),
+      body: payload,
     });
     if (res.ok) {
-      const body = (await res.json()) as { answers: Record<string, JevAnswer> };
+      const body = (await res.json()) as { answers: Record<string, JevAnswer>; usage?: { input_tokens?: number; output_tokens?: number } };
+      // Jev bills input tokens only. Use its count when returned, else estimate (~4 characters per token).
+      const reported = body.usage?.input_tokens;
+      await recordUsage({
+        provider: "jev", model,
+        input: reported ?? Math.ceil(payload.length / 4),
+        output: body.usage?.output_tokens ?? 0,
+        estimated: reported == null,
+      });
       return body.answers;
     }
     if ((res.status === 429 || res.status === 529) && attempt < 4) {

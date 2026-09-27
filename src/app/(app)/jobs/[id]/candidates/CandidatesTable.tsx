@@ -236,7 +236,7 @@ export function CandidatesTable(props: {
                   )}</td>
                   <td className="reason">
                     {c.score_status === "error" ? <span className="error-text">Scoring failed: {c.score_error}</span>
-                      : !e ? <span>{c.score_status === "scoring" ? "Scoring now…" : props.currentVersion ? "Waiting to be scored" : "Waiting for an approved rubric"}</span>
+                      : !e ? <span title={c.score_error ?? undefined}>{c.score_status === "scoring" ? "Scoring now…" : c.score_error ? "Hit a temporary error — retrying automatically" : props.currentVersion ? "Waiting to be scored" : "Waiting for an approved rubric"}</span>
                       : e.disqualified ? <><b>Disqualified.</b> {e.reason}</>
                       : e.reason}
                   </td>

@@ -4,6 +4,7 @@ import { jevDecide, type JevChoiceQuestion } from "./ai/jev";
 import { reviewCandidate, type ReviewCriterion } from "./ai/llm";
 import { env } from "./env";
 import { aggregate } from "./aggregate";
+import { summarise } from "./summary";
 import { answerFor, checkRule, isAiRule, isExpectedAnswerRule } from "./rules";
 import type { Candidate, Criterion, CriterionResult, Decision, Job } from "./types";
 
@@ -93,8 +94,13 @@ async function reuseAiResults(db: SupabaseClient, candidateId: string, rubricId:
   return null;
 }
 
-/** Jev decides each item; OpenAI rechecks low-confidence ones and writes evidence for all. */
-async function scoreWithAi(job: Job, candidate: Candidate, items: Criterion[]) {
+/**
+ * Jev decides each item. OpenAI is called only for the items Jev is unsure about (below the
+ * recheck threshold, or "unclear") — or for everything when Jev isn't configured. When Jev is sure
+ * about all of them, no OpenAI call is made; evidence for Jev's decisions is written on demand
+ * ("Explain" in the candidate panel).
+ */
+async function scoreWithAi(job: Job, rubricId: string, candidate: Candidate, items: Criterion[]) {
   const threshold = Number(job.recheck_threshold);
   const keyOf = (i: number) => `c${i}`;
   const view = items.map(asReview);
@@ -142,30 +148,34 @@ async function scoreWithAi(job: Job, candidate: Candidate, items: Criterion[]) {
     const settled = j && j.confidence >= threshold && j.decision !== "unclear" ? j : undefined;
     return { key: keyOf(i), ...c, settled: settled ? { decision: settled.decision, confidence: settled.confidence } : undefined };
   });
-  const { output: review, provider: reviewer } = await reviewCandidate({ jobTitle: job.title, criteria: reviewInput, answers: candidate.answers });
-  const byKey = new Map(review.results.map((r) => [r.key, r]));
+  const needsAi = reviewInput.some((c) => !c.settled);
+  const reviewed = needsAi
+    ? await reviewCandidate({ jobTitle: job.title, rubricId, criteria: reviewInput, answers: candidate.answers })
+    : null;
+  const byKey = new Map((reviewed?.output.results ?? []).map((r) => [r.key, r]));
 
   const finals: Final[] = items.map((c, i) => {
     const k = keyOf(i);
     const j = jev[k];
-    const r = byKey.get(k);
     const settled = reviewInput[i].settled;
-    const hardLike = view[i].kind === "hard";
-    const allowed = hardLike ? ["pass", "fail", "unclear"] : ["meets", "borderline", "not_met"];
     if (settled) {
       return {
         criterion: c, decision: settled.decision as Decision, confidence: settled.confidence,
-        evidence: r?.evidence ?? "", scoredBy: "jev", initialConfidence: null, probabilities: j?.probabilities ?? null,
+        evidence: "", scoredBy: "jev", initialConfidence: null, probabilities: j?.probabilities ?? null,
       };
     }
+    const r = byKey.get(k);
+    const hardLike = view[i].kind === "hard";
+    const allowed = hardLike ? ["pass", "fail", "unclear"] : ["meets", "borderline", "not_met"];
     const decision = r && allowed.includes(r.decision) ? r.decision : hardLike ? "unclear" : "borderline";
     return {
       criterion: c, decision, confidence: clamp(r?.confidence ?? 0), evidence: r?.evidence ?? "No evidence returned.",
-      scoredBy: reviewer, initialConfidence: j ? j.confidence : null, probabilities: j?.probabilities ?? null,
+      scoredBy: reviewed!.provider, initialConfidence: j ? j.confidence : null, probabilities: j?.probabilities ?? null,
     };
   });
-  return { finals, reason: review.reason };
+  return { finals, reason: reviewed?.output.reason ?? summarise(finals) };
 }
+
 
 /**
  * Stage 1 for one candidate against one rubric version (form answers only):
@@ -195,7 +205,7 @@ export async function scoreCandidate(db: SupabaseClient, job: Job, rubricId: str
   let aiFinals: Final[] = [];
   let aiReason: string | null = null;
   if (!rejectedBy && aiItems.length) {
-    const scored = (await reuseAiResults(db, candidate.id, rubricId, aiItems)) ?? (await scoreWithAi(job, candidate, aiItems));
+    const scored = (await reuseAiResults(db, candidate.id, rubricId, aiItems)) ?? (await scoreWithAi(job, rubricId, candidate, aiItems));
     aiFinals = scored.finals;
     aiReason = scored.reason;
   }
@@ -263,4 +273,41 @@ function clamp(n: number) {
 }
 function round3(n: number) {
   return Math.round(clamp(n) * 1000) / 1000;
+}
+
+/**
+ * On demand: evidence for decisions Jev made on its own (no OpenAI call at scoring time).
+ * Decisions and confidences don't change; only the evidence text is filled in.
+ */
+export async function explainJevDecisions(db: SupabaseClient, job: Job, candidate: Candidate, evaluationId: string) {
+  const { data: rows, error } = await db
+    .from("criterion_results")
+    .select("id, criterion_id, decision, confidence, evidence")
+    .eq("evaluation_id", evaluationId)
+    .eq("scored_by", "jev")
+    .eq("evidence", "");
+  if (error) throw new Error(error.message);
+  if (!rows?.length) return 0;
+  const { data: crit } = await db.from("rubric_criteria").select("*").in("id", rows.map((r) => r.criterion_id));
+  const byId = new Map(((crit ?? []) as Criterion[]).map((c) => [c.id, c]));
+  const items = rows.filter((r) => byId.has(r.criterion_id));
+  const { output } = await reviewCandidate({
+    jobTitle: job.title,
+    rubricId: job.current_rubric_id ?? evaluationId,
+    mode: "explain",
+    answers: candidate.answers,
+    criteria: items.map((r, i) => ({
+      key: `c${i}`,
+      ...asReview(byId.get(r.criterion_id)!),
+      settled: { decision: r.decision, confidence: Number(r.confidence) },
+    })),
+  });
+  const byKey = new Map(output.results.map((r) => [r.key, r.evidence]));
+  await Promise.all(
+    items.map((r, i) => {
+      const evidence = byKey.get(`c${i}`)?.trim();
+      return evidence ? db.from("criterion_results").update({ evidence }).eq("id", r.id) : null;
+    }),
+  );
+  return items.length;
 }

@@ -101,7 +101,12 @@ export function DeepPanel({ jobId, candidate: c, threshold, canEvaluate }: {
 
 function DeepResultView({ d, stale, threshold, stage1 }: { d: DeepEvaluation; stale: boolean; threshold: number; stage1: number | null }) {
   if (deepRunning(d)) {
-    return <div className="status-box"><span><span className="spin" /> Reading the candidate&apos;s materials and judging each criterion…</span></div>;
+    const text = d.status === "running"
+      ? "Reading the candidate’s materials and judging each criterion…"
+      : d.error
+        ? "Hit a temporary error — retrying automatically in a few minutes."
+        : "In the queue — reviews run a few at a time.";
+    return <div className="status-box"><span title={d.error ?? undefined}><span className="spin" /> {text}</span></div>;
   }
   if (d.status === "error") {
     return <div className="banner" style={{ background: "var(--bad-soft)", marginTop: 14 }}><div className="txt"><b style={{ color: "var(--bad)" }}>Evaluation failed.</b> {d.error}</div></div>;

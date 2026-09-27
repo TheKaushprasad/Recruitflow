@@ -6,10 +6,13 @@ import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { draftExpectedAnswer, draftStage1, draftStage2 } from "@/lib/ai/llm";
-import { scorePending } from "@/lib/pipeline";
+import { workStage1 } from "@/lib/worker";
+import { withUsage } from "@/lib/ai/usage";
+import { budgetFor } from "@/lib/budget";
+import { explainJevDecisions } from "@/lib/scoring";
 import { getRuleQuestions } from "@/lib/data";
 import { describeRule, validateRule, type FormRule } from "@/lib/rules";
-import type { Criterion, CriterionKind, Job } from "@/lib/types";
+import type { Candidate, Criterion, CriterionKind, Job } from "@/lib/types";
 import type { ActionResult } from "./jobs";
 
 type Db = Awaited<ReturnType<typeof requireUser>>["supabase"];
@@ -30,16 +33,13 @@ async function approve(db: Db, job: Job, rubricId: string) {
   await db.from("rubrics").update({ status: "approved", approved_at: new Date().toISOString() }).eq("id", rubricId);
   await db.from("jobs").update({ current_rubric_id: rubricId }).eq("id", job.id);
   // Everyone gets a stage-1 result on the new version. Unchanged AI items are reused, so this is
-  // instant and free when only filters, weights or the stage-2 rubric changed.
+  // instant and free when only filters, weights or the stage-2 rubric changed. The queue worker
+  // starts now; the every-minute scheduler finishes whatever doesn't fit in this request.
+  await db.from("candidates")
+    .update({ score_status: "pending", score_error: null, score_attempts: 0, next_attempt_at: null })
+    .eq("job_id", job.id);
   after(async () => {
-    const admin = createAdminClient();
-    const { data: fresh } = await admin.from("jobs").select("*").eq("id", job.id).single<Job>();
-    if (fresh) {
-      for (let i = 0; i < 20; i++) {
-        const r = await scorePending(admin, fresh, 10);
-        if (!r.remaining || (!r.scored && !r.failed)) break;
-      }
-    }
+    await workStage1(createAdminClient(), { jobId: job.id, deadline: Date.now() + 250_000 });
   });
 }
 
@@ -88,7 +88,7 @@ export async function generateStage(jobId: string, stage: 1 | 2): Promise<Action
     if (stage === 1) {
       const questions = await getRuleQuestions(supabase, jobId);
       if (!questions.length) return { ok: false, error: "Add form questions in Job setup first — stage 1 screens their answers." };
-      const res = await draftStage1({ ...job, questions });
+      const res = await withUsage({ recruiterId: job.recruiter_id, jobId, purpose: "rubric" }, () => draftStage1({ ...job, questions }));
       model = res.model;
       const filters: Record<string, unknown>[] = [];
       for (const f of res.draft.filters) {
@@ -105,7 +105,7 @@ export async function generateStage(jobId: string, stage: 1 | 2): Promise<Action
       }
       rows = filters;
     } else {
-      const res = await draftStage2(job);
+      const res = await withUsage({ recruiterId: job.recruiter_id, jobId, purpose: "rubric" }, () => draftStage2(job));
       model = res.model;
       rows = [
         ...res.draft.must_haves.map((h) => ({ stage: 2, kind: "hard", name: h.name, description: h.description, weight: 0, source_constraint: h.source_constraint })),
@@ -134,12 +134,14 @@ export async function generateStage(jobId: string, stage: 1 | 2): Promise<Action
 /** OpenAI writes a sample strong answer to an open-ended form question, from the job description. */
 export async function generateExpectedAnswer(jobId: string, question: string): Promise<ActionResult & { answer?: string }> {
   try {
-    const { supabase } = await requireUser();
+    const { supabase, user } = await requireUser();
     const { data: job } = await supabase.from("jobs").select("title, description").eq("id", jobId).single();
     if (!job) return { ok: false, error: "Job not found." };
     if (job.description.trim().length < 80) return { ok: false, error: "Add a fuller job description in Job setup first — the expected answer is based on it." };
     if (!question.trim()) return { ok: false, error: "Pick the question first." };
-    const answer = await draftExpectedAnswer({ title: job.title, description: job.description, question });
+    const answer = await withUsage({ recruiterId: user.id, jobId, purpose: "rubric" }, () =>
+      draftExpectedAnswer({ title: job.title, description: job.description, question }),
+    );
     return { ok: true, message: "Expected answer drafted — edit it as you like.", answer };
   } catch (e) {
     return fail(e);
@@ -258,15 +260,38 @@ export async function approveRubric(rubricId: string, biasReviewed: boolean): Pr
 
 export async function retryScoring(candidateIds: string[]): Promise<ActionResult> {
   const { supabase } = await requireUser();
-  const { data } = await supabase.from("candidates").update({ score_status: "pending", score_error: null }).in("id", candidateIds).select("job_id");
+  const { data } = await supabase
+    .from("candidates")
+    .update({ score_status: "pending", score_error: null, score_attempts: 0, next_attempt_at: null })
+    .in("id", candidateIds)
+    .select("job_id");
   const jobId = data?.[0]?.job_id;
   if (jobId) {
     after(async () => {
-      const admin = createAdminClient();
-      const { data: job } = await admin.from("jobs").select("*").eq("id", jobId).single<Job>();
-      if (job) await scorePending(admin, job, candidateIds.length);
+      await workStage1(createAdminClient(), { jobId, deadline: Date.now() + 250_000 });
     });
     revalidatePath(`/jobs/${jobId}`, "layout");
   }
   return { ok: true, message: "Re-scoring started" };
+}
+
+/** Writes evidence for decisions Jev made on its own (they're stored without it to save cost). */
+export async function explainScores(candidateId: string): Promise<ActionResult> {
+  try {
+    const { supabase, user } = await requireUser();
+    const { data: cand } = await supabase.from("candidates").select("*").eq("id", candidateId).single<Candidate>();
+    if (!cand) return { ok: false, error: "Candidate not found." };
+    const { data: job } = await supabase.from("jobs").select("*").eq("id", cand.job_id).single<Job>();
+    if (!job?.current_rubric_id) return { ok: false, error: "This job has no approved rubric." };
+    const { data: ev } = await supabase.from("evaluations").select("id").eq("candidate_id", cand.id).eq("rubric_id", job.current_rubric_id).maybeSingle();
+    if (!ev) return { ok: false, error: "This candidate hasn't been scored on the current rubric yet." };
+    if ((await budgetFor(supabase, user.id)).over) return { ok: false, error: "This month's AI budget is used up. Raise it on the Integrations page." };
+    const n = await withUsage({ recruiterId: user.id, jobId: job.id, purpose: "stage1_explain" }, () =>
+      explainJevDecisions(supabase, job, cand, ev.id),
+    );
+    revalidatePath(`/jobs/${job.id}`, "layout");
+    return { ok: true, message: n ? `Explained ${n} decision${n === 1 ? "" : "s"}.` : "Everything already has evidence." };
+  } catch (e) {
+    return fail(e);
+  }
 }

@@ -1,14 +1,14 @@
 import { timingSafeEqual } from "node:crypto";
-import { NextResponse, type NextRequest } from "next/server";
+import { after, NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { env } from "@/lib/env";
-import { runJob } from "@/lib/pipeline";
-import type { Job } from "@/lib/types";
+import { runWorker } from "@/lib/worker";
 
 export const maxDuration = 300;
 
-// Called every few minutes by a scheduler (Vercel Cron, Supabase pg_cron, cron-job.org…)
-// with header `Authorization: Bearer <CRON_SECRET>`.
+// The queue worker's heartbeat. Called every minute by Supabase pg_cron (see supabase/cron.sql),
+// plus Vercel's daily cron as a fallback, with header `Authorization: Bearer <CRON_SECRET>`.
+// Each call syncs due forms and works both scoring queues for up to ~4 minutes.
 function authorized(req: NextRequest) {
   const got = Buffer.from(req.headers.get("authorization") ?? "");
   const want = Buffer.from(`Bearer ${env.cronSecret()}`);
@@ -18,15 +18,10 @@ function authorized(req: NextRequest) {
 export async function GET(req: NextRequest) {
   if (!process.env.CRON_SECRET) return NextResponse.json({ error: "CRON_SECRET is not set" }, { status: 500 });
   if (!authorized(req)) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  const db = createAdminClient();
-  const { data: jobs } = await db
-    .from("jobs")
-    .select("*")
-    .eq("status", "open")
-    .or("google_form_id.not.is.null,sheet_id.not.is.null");
-  const results = [];
-  for (const job of (jobs ?? []) as Job[]) {
-    results.push({ job: job.id, ...(await runJob(db, job, 8)) });
-  }
-  return NextResponse.json({ ran: results.length, results });
+  // Reply straight away (the scheduler's HTTP call has a short timeout) and keep working after it.
+  after(async () => {
+    const result = await runWorker(createAdminClient());
+    if (result.added || result.scored || result.failed || result.stage2) console.log("worker", result);
+  });
+  return NextResponse.json({ started: true }, { status: 202 });
 }

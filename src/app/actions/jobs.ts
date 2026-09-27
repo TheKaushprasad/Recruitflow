@@ -9,7 +9,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { googleFor } from "@/lib/google/auth";
 import { setAcceptingResponses, upsertForm } from "@/lib/google/forms";
 import { parseFormId, parseSheetId, readResponseRows } from "@/lib/google/sheets";
-import { scorePending, syncJob } from "@/lib/pipeline";
+import { syncJob } from "@/lib/pipeline";
+import { workStage1 } from "@/lib/worker";
 import type { FormQuestion, Job, QuestionRole, QuestionType } from "@/lib/types";
 
 export type ActionResult = { ok: true; message?: string } | { ok: false; error: string };
@@ -223,7 +224,7 @@ export async function syncNow(jobId: string): Promise<ActionResult> {
   const sync = await syncJob(db, job);
   if (sync.error) return { ok: false, error: `Couldn't pull responses: ${sync.error}` };
   after(async () => {
-    await scorePending(db, job, 25);
+    await workStage1(db, { jobId: job.id, deadline: Date.now() + 250_000 });
   });
   revalidatePath(`/jobs/${jobId}`, "layout");
   const n = sync.added;

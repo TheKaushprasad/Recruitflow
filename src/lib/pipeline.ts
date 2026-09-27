@@ -4,8 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { googleFor } from "./google/auth";
 import { listResponses, type RawResponse } from "./google/forms";
 import { readResponseRows } from "./google/sheets";
-import { scoreCandidate } from "./scoring";
-import type { Candidate, FormQuestion, Job } from "./types";
+import type { FormQuestion, Job } from "./types";
 
 // Background work for one job: pull new responses, then score what's pending.
 // Runs with the service-role client, so every query filters by recruiter/job explicitly.
@@ -73,48 +72,4 @@ export async function syncJob(db: SupabaseClient, job: Job) {
     await db.from("jobs").update({ last_sync_error: msg }).eq("id", job.id);
     return { added: 0, error: msg };
   }
-}
-
-/**
- * Scores candidates that have no evaluation on the job's current approved rubric.
- * `limit` keeps a single run inside serverless time limits; the next run continues.
- */
-export async function scorePending(db: SupabaseClient, job: Job, limit = 8) {
-  if (!job.current_rubric_id) return { scored: 0, failed: 0, remaining: 0 };
-  const { data: rubric } = await db.from("rubrics").select("status").eq("id", job.current_rubric_id).single();
-  if (rubric?.status !== "approved") return { scored: 0, failed: 0, remaining: 0 };
-
-  const { data: cands } = await db
-    .from("candidates")
-    .select("*, evaluations(rubric_id)")
-    .eq("job_id", job.id)
-    .neq("score_status", "error") // failed ones wait for a manual retry, so errors don't burn API spend
-    .order("created_at");
-  const pending = ((cands ?? []) as (Candidate & { evaluations: { rubric_id: string }[] })[]).filter(
-    (c) => !c.evaluations.some((e) => e.rubric_id === job.current_rubric_id),
-  );
-
-  let scored = 0;
-  let failed = 0;
-  for (const c of pending.slice(0, limit)) {
-    await db.from("candidates").update({ score_status: "scoring", score_error: null }).eq("id", c.id);
-    try {
-      await scoreCandidate(db, job, job.current_rubric_id, c);
-      await db.from("candidates").update({ score_status: "scored" }).eq("id", c.id);
-      scored++;
-    } catch (e) {
-      failed++;
-      await db
-        .from("candidates")
-        .update({ score_status: "error", score_error: errorMessage(e) })
-        .eq("id", c.id);
-    }
-  }
-  return { scored, failed, remaining: Math.max(0, pending.length - limit) };
-}
-
-export async function runJob(db: SupabaseClient, job: Job, limit?: number) {
-  const sync = await syncJob(db, job);
-  const score = await scorePending(db, job, limit);
-  return { ...sync, ...score };
 }

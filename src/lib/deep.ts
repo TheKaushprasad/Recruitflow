@@ -3,20 +3,19 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { deepEvaluate } from "./ai/llm";
 import { aggregate } from "./aggregate";
 import { errorMessage } from "./errors";
+import { MAX_ATTEMPTS, PermanentError, isPermanentError, retryDelayMs } from "./retry";
 import { readCv, readGitHub, readPortfolio } from "./sources";
-import type { Candidate, Criterion, CriterionResult, DeepResult, Job } from "./types";
+import type { Candidate, Criterion, CriterionResult, DeepEvaluation, DeepResult, Job } from "./types";
 
 /**
  * Stage 2 (after the recruiter moves a candidate on): reads their CV, portfolio and GitHub,
  * then judges every stage-2 criterion using the JD plus all materials and the form answers.
  * Stage-1 filter results carry over, so a failed "reject" filter still disqualifies.
- * Runs with the service-role client; every query is scoped by ids from the row.
+ * Runs with the service-role client on a row already claimed by the worker (status "running");
+ * every query is scoped by ids from the row.
  */
-export async function runDeepEvaluation(db: SupabaseClient, evaluationId: string) {
-  const { data: row } = await db.from("deep_evaluations").select("*").eq("id", evaluationId).single();
-  if (!row || row.status === "done") return;
-  await db.from("deep_evaluations").update({ status: "running", error: null }).eq("id", evaluationId);
-
+export async function runDeepEvaluation(db: SupabaseClient, row: DeepEvaluation) {
+  const evaluationId = row.id;
   try {
     const [{ data: job }, { data: cand }, { data: crit }, { data: stage1 }] = await Promise.all([
       db.from("jobs").select("*").eq("id", row.job_id).single<Job>(),
@@ -24,14 +23,14 @@ export async function runDeepEvaluation(db: SupabaseClient, evaluationId: string
       db.from("rubric_criteria").select("*").eq("rubric_id", row.rubric_id).eq("enabled", true).order("position"),
       db.from("evaluations").select("reason, score, criterion_results(*)").eq("candidate_id", row.candidate_id).eq("rubric_id", row.rubric_id).maybeSingle(),
     ]);
-    if (!job || !cand) throw new Error("Candidate or job no longer exists.");
+    if (!job || !cand) throw new PermanentError("Candidate or job no longer exists.");
     const all = (crit ?? []) as Criterion[];
 
     // Stage-2 rubric; until one is generated, fall back to the stage-1 AI criteria.
     let criteria = all.filter((c) => c.stage === 2 && c.kind !== "rule");
     const usingFallback = !criteria.length;
     if (usingFallback) criteria = all.filter((c) => c.stage === 1 && c.kind !== "rule");
-    if (!criteria.length) throw new Error("There's no stage-2 rubric yet. Generate one on the Rubric tab.");
+    if (!criteria.length) throw new PermanentError("There's no stage-2 rubric yet. Generate one on the Rubric tab.");
 
     // Stage-1 results for this candidate, as context and for carried-over filters.
     const byId = new Map(all.map((c) => [c.id, c]));
@@ -47,7 +46,7 @@ export async function runDeepEvaluation(db: SupabaseClient, evaluationId: string
     const [cv, portfolio, github] = await Promise.all([readCv(cand.resume_url), readPortfolio(cand.portfolio_url), readGitHub(cand.github_url)]);
     const sources = [cv, portfolio, github].map(({ kind, url, status, note }) => ({ kind, url, status, note }));
     if (![cv, portfolio, github].some((s) => s.status === "read")) {
-      throw new Error(
+      throw new PermanentError(
         "None of the candidate's links could be read: " +
           sources.map((s) => `${s.kind === "cv" ? "CV" : s.kind === "github" ? "GitHub" : "portfolio"}: ${s.note}`).join(" · "),
       );
@@ -113,6 +112,16 @@ export async function runDeepEvaluation(db: SupabaseClient, evaluationId: string
       finished_at: new Date().toISOString(),
     }).eq("id", evaluationId);
   } catch (e) {
-    await db.from("deep_evaluations").update({ status: "error", error: errorMessage(e), finished_at: new Date().toISOString() }).eq("id", evaluationId);
+    // Temporary failures (rate limits, timeouts, a site that didn't respond) go back in the queue.
+    const attempts = (row.attempts ?? 0) + 1;
+    const msg = errorMessage(e);
+    if (!(e instanceof PermanentError) && !isPermanentError(msg) && attempts < MAX_ATTEMPTS) {
+      await db.from("deep_evaluations").update({
+        status: "queued", attempts, error: `Retrying soon — ${msg}`, claimed_at: null,
+        next_attempt_at: new Date(Date.now() + retryDelayMs(attempts)).toISOString(),
+      }).eq("id", evaluationId);
+      return;
+    }
+    await db.from("deep_evaluations").update({ status: "error", attempts, error: msg, claimed_at: null, finished_at: new Date().toISOString() }).eq("id", evaluationId);
   }
 }

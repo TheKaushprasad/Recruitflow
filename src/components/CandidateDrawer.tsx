@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { useAction } from "./Toast";
 import { DeepPanel } from "./DeepPanel";
 import { moveCandidates } from "@/app/actions/pipeline";
-import { retryScoring } from "@/app/actions/rubric";
+import { explainScores, retryScoring } from "@/app/actions/rubric";
 import { DECISION_LABEL, confLevel } from "@/lib/format";
 import type { CandidateRow } from "@/lib/data";
 import type { Criterion, Job, Stage } from "@/lib/types";
@@ -30,6 +30,7 @@ export function CandidateDrawer({ job, candidate: c, criteria, stages, onClose, 
     .map((r) => ({ r, crit: byId.get(r.criterion_id) }))
     .filter((x) => x.crit)
     .sort((a, b) => a.crit!.position - b.crit!.position);
+  const unexplained = (e?.criterion_results ?? []).filter((r) => r.scored_by === "jev" && !r.evidence).length;
   const hard = results.filter((x) => x.crit!.kind === "hard");
   const soft = results.filter((x) => x.crit!.kind === "soft");
   const rules = results.filter((x) => x.crit!.kind === "rule");
@@ -102,7 +103,18 @@ export function CandidateDrawer({ job, candidate: c, criteria, stages, onClose, 
           <DeepPanel jobId={job.id} candidate={c} threshold={threshold} canEvaluate={!!job.current_rubric_id} />
         )}
 
-        {e && <h3 style={{ margin: "0 0 10px", color: "var(--muted)", fontSize: 13, letterSpacing: ".08em", textTransform: "uppercase" }}>Stage 1 · Form screening</h3>}
+        {e && (
+          <div className="row" style={{ justifyContent: "space-between", margin: "0 0 10px" }}>
+            <h3 style={{ margin: 0, color: "var(--muted)", fontSize: 13, letterSpacing: ".08em", textTransform: "uppercase" }}>Stage 1 · Form screening</h3>
+            {unexplained > 0 && !c.stale && (
+              <button className="pillbtn btn-ghost btn-sm" disabled={pending}
+                title="Jev's confident decisions are stored without evidence to save cost. This asks the AI reviewer to write it."
+                onClick={async () => { const r = await run(() => explainScores(c.id)); if (r.ok) router.refresh(); }}>
+                {pending ? <span className="spin" /> : `Explain ${unexplained} Jev decision${unexplained === 1 ? "" : "s"}`}
+              </button>
+            )}
+          </div>
+        )}
 
         {rules.length > 0 && <h3 style={{ marginBottom: 10 }}>Form rules</h3>}
         {rules.map(({ r, crit }) => (
@@ -159,10 +171,12 @@ function Evidence({ name, weight, r, threshold, note }: {
         <b>{name}{weight != null && <span className="mono muted" style={{ fontWeight: 400 }}> · {weight}%</span>}</b>
         <span className={`chip ${dk}`}>{dl}</span>
       </div>
-      <q>{r.evidence || "No evidence recorded."}</q>
+      {r.evidence ? <q>{r.evidence}</q> : (
+        <q className="muted">{r.scored_by === "jev" ? "Jev was confident, so no AI explanation was written. Use “Explain” above to get one." : "No evidence recorded."}</q>
+      )}
       <div className="h">
         <span className="meta">
-          {r.initial_confidence != null ? `Jev ${Number(r.initial_confidence).toFixed(2)} → rechecked by ${providerLabel(r.scored_by)}` : r.scored_by === "jev" ? "Scored by Jev · evidence by the AI reviewer" : `Scored by ${providerLabel(r.scored_by)}`}
+          {r.initial_confidence != null ? `Jev ${Number(r.initial_confidence).toFixed(2)} → rechecked by ${providerLabel(r.scored_by)}` : r.scored_by === "jev" ? (r.evidence ? "Scored by Jev · evidence by the AI reviewer" : "Scored by Jev") : `Scored by ${providerLabel(r.scored_by)}`}
         </span>
         <span className="confbar"><i style={{ ["--w" as string]: `${Math.round(conf * 100)}%`, ["--c" as string]: `var(--${ck})` }} />{conf.toFixed(2)}</span>
       </div>

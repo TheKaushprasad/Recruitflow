@@ -4,13 +4,14 @@ import { after } from "next/server";
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { runDeepEvaluation } from "@/lib/deep";
+import { workStage2 } from "@/lib/worker";
 import { errorMessage } from "@/lib/errors";
 import { normalizeUrl } from "@/lib/urls";
 import type { Job } from "@/lib/types";
 import type { ActionResult } from "./jobs";
 
-const MAX_PER_RUN = 10;
+/** Reviews run from a queue (a few at a time, finished by the every-minute scheduler). */
+const MAX_PER_RUN = 100;
 
 /** Runs (or re-runs) the stage-2 evaluation: CV + portfolio + GitHub against the JD and stage-2 rubric. */
 export async function startDeepEvaluation(jobId: string, candidateIds: string[]): Promise<ActionResult> {
@@ -41,16 +42,16 @@ export async function startDeepEvaluation(jobId: string, candidateIds: string[])
       .select("id");
     if (error) return { ok: false, error: errorMessage(error) };
 
+    const ids = (rows ?? []).map((r) => r.id as string);
     after(async () => {
-      const admin = createAdminClient();
-      for (const r of rows ?? []) await runDeepEvaluation(admin, r.id);
+      await workStage2(createAdminClient(), { ids, deadline: Date.now() + 250_000, concurrency: 3 });
     });
 
     revalidatePath(`/jobs/${jobId}`, "layout");
     const skipped = [...busy, ...noLinks].length;
     return {
       ok: true,
-      message: `Evaluating ${todo.length} candidate${todo.length === 1 ? "" : "s"} — about 30–60 seconds each.${skipped ? ` Skipped ${skipped} (already running or no links).` : ""}`,
+      message: `Evaluating ${todo.length} candidate${todo.length === 1 ? "" : "s"} — about 30–60 seconds each, 3 at a time.${skipped ? ` Skipped ${skipped} (already running or no links).` : ""}`,
     };
   } catch (e) {
     return { ok: false, error: errorMessage(e) };
@@ -65,7 +66,7 @@ export async function moveToStage2(jobId: string, candidateIds: string[]): Promi
   try {
     const { supabase } = await requireUser();
     if (!candidateIds.length) return { ok: false, error: "Select at least one candidate." };
-    if (candidateIds.length > MAX_PER_RUN) return { ok: false, error: `Move up to ${MAX_PER_RUN} candidates at a time — each one is evaluated right away.` };
+    if (candidateIds.length > MAX_PER_RUN) return { ok: false, error: `Move up to ${MAX_PER_RUN} candidates at a time.` };
     const { data: moved, error } = await supabase
       .from("candidates")
       .update({ stage2_at: new Date().toISOString() })
