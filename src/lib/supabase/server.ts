@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
@@ -19,10 +20,26 @@ export async function createClient() {
   });
 }
 
-/** Signed-in recruiter + an RLS-scoped client. Redirects to /login otherwise. */
-export async function requireUser() {
-  const supabase = await createClient();
-  const { data } = await supabase.auth.getUser();
-  if (!data.user) redirect("/login");
-  return { supabase, user: data.user };
+export interface SessionUser {
+  id: string;
+  email: string | undefined;
+  user_metadata: Record<string, unknown>;
 }
+
+/**
+ * Signed-in recruiter + an RLS-scoped client. Redirects to /login otherwise.
+ * Verifies the session token locally (getClaims) and is shared across the layout and page
+ * of one request (React cache), so a page render doesn't pay for repeated auth round trips.
+ */
+export const requireUser = cache(async () => {
+  const supabase = await createClient();
+  const { data } = await supabase.auth.getClaims();
+  const c = data?.claims;
+  if (!c?.sub) redirect("/login");
+  const user: SessionUser = {
+    id: c.sub,
+    email: typeof c.email === "string" ? c.email : undefined,
+    user_metadata: (c.user_metadata as Record<string, unknown>) ?? {},
+  };
+  return { supabase, user };
+});

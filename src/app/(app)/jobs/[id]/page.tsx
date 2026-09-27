@@ -4,6 +4,7 @@ import { requireUser } from "@/lib/supabase/server";
 import { getCandidates, getInterviews, getJob, getRelatedJobs, getRubrics, getStages } from "@/lib/data";
 import { RelatedJobs } from "@/components/RelatedJobs";
 import { SyncButton } from "@/components/SyncButton";
+import { LiveRefresh } from "@/components/LiveRefresh";
 import { nowMs, timeAgo } from "@/lib/format";
 
 // Server actions on this page may score candidates in the background (after()).
@@ -132,6 +133,7 @@ export default async function JobOverview({ params }: PageProps<"/jobs/[id]">) {
         <div className="row">
           <Link className="pillbtn btn-ghost btn-sm" href={`/emails?job=${id}`} style={{ textDecoration: "none" }}>Email history</Link>
           {hasForm && job.status === "open" && <SyncButton jobId={id} />}
+          <LiveRefresh jobId={id} busy={cands.some((c) => c.score_status === "scoring")} />
         </div>
       </div>
       <div className="attn">

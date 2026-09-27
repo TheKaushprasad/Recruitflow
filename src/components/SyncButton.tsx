@@ -12,8 +12,9 @@ export function SyncButton({ jobId, label = "Sync now" }: { jobId: string; label
       className="pillbtn btn-ghost btn-sm"
       disabled={pending}
       onClick={async () => {
-        await run(() => syncNow(jobId));
-        setTimeout(() => router.refresh(), 8000);
+        // New responses are already saved when this returns; scores then stream in live.
+        const r = await run(() => syncNow(jobId));
+        if (r.ok) router.refresh();
       }}
     >
       {pending ? <span className="spin" /> : label}

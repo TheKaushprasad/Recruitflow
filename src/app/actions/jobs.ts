@@ -9,7 +9,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { googleFor } from "@/lib/google/auth";
 import { setAcceptingResponses, upsertForm } from "@/lib/google/forms";
 import { parseFormId, parseSheetId, readResponseRows } from "@/lib/google/sheets";
-import { runJob } from "@/lib/pipeline";
+import { scorePending, syncJob } from "@/lib/pipeline";
 import type { FormQuestion, Job, QuestionRole, QuestionType } from "@/lib/types";
 
 export type ActionResult = { ok: true; message?: string } | { ok: false; error: string };
@@ -217,10 +217,20 @@ export async function syncNow(jobId: string): Promise<ActionResult> {
   const { data: job } = await supabase.from("jobs").select("*").eq("id", jobId).single<Job>();
   if (!job) return { ok: false, error: "Job not found." };
   if (job.status === "closed") return { ok: false, error: "This job is closed. Reopen it to pull in new responses." };
+  // Pull responses now so the table shows them straight away; scoring (slow AI calls)
+  // continues after the response and the table updates live as scores land.
+  const db = createAdminClient();
+  const sync = await syncJob(db, job);
+  if (sync.error) return { ok: false, error: `Couldn't pull responses: ${sync.error}` };
   after(async () => {
-    await runJob(createAdminClient(), job, 25);
+    await scorePending(db, job, 25);
   });
-  return { ok: true, message: "Syncing responses and scoring in the background — refresh in a minute." };
+  revalidatePath(`/jobs/${jobId}`, "layout");
+  const n = sync.added;
+  return {
+    ok: true,
+    message: n ? `Pulled in ${n} new response${n === 1 ? "" : "s"} — scoring now.` : "Up to date — no new responses.",
+  };
 }
 
 export async function updateJobSettings(

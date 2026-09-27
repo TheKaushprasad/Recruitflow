@@ -2,13 +2,14 @@
 
 import { providerLabel } from "@/lib/ai/provider";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useAction } from "@/components/Toast";
 import { CandidateDrawer } from "@/components/CandidateDrawer";
 import { VERDICT, deepRunning } from "@/components/DeepPanel";
 import { moveToStage2, startDeepEvaluation } from "@/app/actions/deep";
 import { SendEmailModal } from "@/components/SendEmailModal";
 import { SyncButton } from "@/components/SyncButton";
+import { useLiveRefresh } from "@/components/useLiveRefresh";
 import { moveCandidates, exportResults } from "@/app/actions/pipeline";
 import { retryScoring } from "@/app/actions/rubric";
 import { confLevel } from "@/lib/format";
@@ -101,13 +102,10 @@ export function CandidatesTable(props: {
     return list;
   }, [candidates, q, filter, sortBy]);
 
-  // Refresh while stage-2 evaluations are running.
+  // Live updates: new responses, stage-1 scores and CV reviews appear without a reload.
+  const anyScoring = candidates.some((c) => c.score_status === "scoring");
   const anyRunning = candidates.some((c) => deepRunning(c.deep));
-  useEffect(() => {
-    if (!anyRunning) return;
-    const t = setInterval(() => router.refresh(), 5000);
-    return () => clearInterval(t);
-  }, [anyRunning, router]);
+  useLiveRefresh(job.id, anyScoring || anyRunning);
 
   /** Move to stage 2 (which starts the CV review), or re-run the review for people already there. */
   const toStage2 = async (ids: string[]) => {

@@ -1,4 +1,5 @@
 import "server-only";
+import { cache } from "react";
 import { notFound } from "next/navigation";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { relatedJobs, type Relation } from "./related";
@@ -30,11 +31,12 @@ export type CandidateRow = Candidate & {
   inStage2: boolean;
 };
 
-export async function getJob(db: SupabaseClient, jobId: string) {
+/** Shared by a job's layout and page within one request (same client instance from requireUser). */
+export const getJob = cache(async (db: SupabaseClient, jobId: string) => {
   const { data } = await db.from("jobs").select("*").eq("id", jobId).maybeSingle();
   if (!data) notFound();
   return data as Job;
-}
+});
 
 /** Latest rubric (draft if one is being edited) plus the approved one in use. */
 export async function getRubrics(db: SupabaseClient, job: Job) {

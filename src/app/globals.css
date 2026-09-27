@@ -311,6 +311,10 @@ nav.tabs a.tab[aria-current="page"]{color:var(--ink);border-bottom-color:var(--g
 .k-interviews .tl-dot{background:var(--warn)}
 .k-emails .tl-dot{background:var(--muted)}
 .k-deep .tl-dot{background:var(--green-ink)}
+/* loading placeholders */
+.skel{background:linear-gradient(90deg,var(--surface-2) 0%,var(--line) 50%,var(--surface-2) 100%);background-size:200% 100%;border-radius:8px;animation:skel 1.2s ease-in-out infinite}
+@keyframes skel{0%{background-position:100% 0}100%{background-position:-100% 0}}
+@media (prefers-reduced-motion:reduce){.skel{animation:none}}
 /* candidates table: stage 1 | stage 2 */
 .cand-table{min-width:1240px}
 .cand-table .reason{max-width:34ch;font-size:13px}

@@ -11,9 +11,12 @@ import { JobStatusButton } from "@/components/JobStatusButton";
 export default async function JobLayout({ children, params }: LayoutProps<"/jobs/[id]">) {
   const { id } = await params;
   const { supabase } = await requireUser();
-  const job = await getJob(supabase, id);
-  const { count } = await supabase.from("candidates").select("id", { count: "exact", head: true }).eq("job_id", id);
-  const { data: draft } = await supabase.from("rubrics").select("id").eq("job_id", id).eq("status", "draft").maybeSingle();
+  // Run the header queries in parallel rather than one after another.
+  const [job, { count }, { data: draft }] = await Promise.all([
+    getJob(supabase, id),
+    supabase.from("candidates").select("id", { count: "exact", head: true }).eq("job_id", id),
+    supabase.from("rubrics").select("id").eq("job_id", id).eq("status", "draft").maybeSingle(),
+  ]);
 
   // Pull new responses while the recruiter is looking, at most every 2 minutes.
   // Keeps things fresh locally (no scheduler) and between scheduled runs in production.

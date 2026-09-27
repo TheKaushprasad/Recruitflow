@@ -21,9 +21,11 @@ export async function proxy(request: NextRequest) {
     },
   );
 
-  const { data } = await supabase.auth.getUser();
+  // getClaims refreshes an expiring session and verifies the token locally (signing keys),
+  // avoiding a round trip to Supabase Auth on every request.
+  const { data } = await supabase.auth.getClaims();
   const path = request.nextUrl.pathname;
-  if (!data.user && !PUBLIC.some((p) => path.startsWith(p))) {
+  if (!data?.claims?.sub && !PUBLIC.some((p) => path.startsWith(p))) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.search = "";
