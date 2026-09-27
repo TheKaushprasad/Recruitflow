@@ -193,12 +193,13 @@ export function CandidatesTable(props: {
       </div>
 
       <div className="tablewrap">
-        <table>
+        <table className="cand-table">
           <thead>
             <tr>
               <th><input type="checkbox" aria-label="Select all shown" checked={rows.length > 0 && rows.every((c) => sel.has(c.id))}
                 onChange={(e) => { const s = new Set(sel); rows.forEach((c) => (e.target.checked ? s.add(c.id) : s.delete(c.id))); setSel(s); }} /></th>
-              <th>#</th><th>Candidate</th><th>Stage 1 score</th><th>Confidence</th><th>Stage 2 · CV review</th><th>Why they ranked here</th><th>Pipeline</th>
+              <th>#</th><th>Candidate</th><th>Stage 1 score</th><th>Confidence</th><th>Why they ranked here</th>
+              <th className="stage2-start">Stage 2 · CV review</th><th>Why they ranked here</th><th>Pipeline</th>
             </tr>
           </thead>
           <tbody>
@@ -235,7 +236,13 @@ export function CandidatesTable(props: {
                       {rechecked > 0 && <span className="hint" style={{ margin: 0 }}>↻ {rechecked} rechecked by {providerLabel(e.criterion_results.find((r) => r.initial_confidence != null)?.scored_by)}</span>}
                     </div>
                   )}</td>
-                  <td onClick={(ev) => ev.stopPropagation()}>
+                  <td className="reason">
+                    {c.score_status === "error" ? <span className="error-text">Scoring failed: {c.score_error}</span>
+                      : !e ? <span>{c.score_status === "scoring" ? "Scoring now…" : props.currentVersion ? "Waiting to be scored" : "Waiting for an approved rubric"}</span>
+                      : e.disqualified ? <><b>Disqualified.</b> {e.reason}</>
+                      : e.reason}
+                  </td>
+                  <td className="stage2-start" onClick={(ev) => ev.stopPropagation()}>
                     {!c.inStage2 ? (
                       e?.disqualified ? <span className="muted">—</span> : (
                         <button className="pillbtn btn-lime btn-sm" disabled={pending || !props.currentVersion || !e}
@@ -267,11 +274,19 @@ export function CandidatesTable(props: {
                       </div>
                     )}
                   </td>
-                  <td className="reason">
-                    {c.score_status === "error" ? <span className="error-text">Scoring failed: {c.score_error}</span>
-                      : !e ? <span>{c.score_status === "scoring" ? "Scoring now…" : props.currentVersion ? "Waiting to be scored" : "Waiting for an approved rubric"}</span>
-                      : e.disqualified ? <><b>Disqualified.</b> {e.reason}</>
-                      : e.reason}
+                  <td className="reason" style={{ opacity: c.deepStale ? 0.6 : 1 }}>
+                    {!c.inStage2 ? <span className="muted">—</span>
+                      : c.deep && deepRunning(c.deep) ? <span>Reading their CV, portfolio and GitHub…</span>
+                      : c.deep?.status === "error" ? <span className="error-text">Review failed: {c.deep.error}</span>
+                      : c.deep?.status === "done" ? (
+                        <>
+                          {c.deep.disqualified && <b>Fails a must-have. </b>}
+                          {c.deep.summary}
+                          {c.deepStale && <span className="hint" style={{ margin: "4px 0 0", display: "block" }}>Reviewed on an older rubric — review again for the current one.</span>}
+                        </>
+                      )
+                      : !(c.resume_url || c.portfolio_url || c.github_url) ? <span>No CV, portfolio or GitHub link yet.</span>
+                      : <span>Not reviewed yet.</span>}
                   </td>
                   <td>
                     {e?.disqualified ? <span className="chip bad">✕ Filter</span>
@@ -282,7 +297,7 @@ export function CandidatesTable(props: {
               );
             })}
             {!rows.length && (
-              <tr><td colSpan={8} className="muted" style={{ textAlign: "center", padding: 40 }}>
+              <tr><td colSpan={9} className="muted" style={{ textAlign: "center", padding: 40 }}>
                 {candidates.length ? "No candidates match. Clear the search or pick another filter." : "No applications yet. Share your form link — responses appear here within a few minutes."}
               </td></tr>
             )}
