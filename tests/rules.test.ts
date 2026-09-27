@@ -97,6 +97,14 @@ test("CTC rules compare in lakhs; AI filters need a written requirement", () => 
   assert.match(describeRule(r({ question: "Current city", op: "ai", instruction: "In Bengaluru" })), /AI checks: In Bengaluru/);
 });
 
+test("open-ended questions default to 'compare with expected answer', which needs an expected answer", () => {
+  const qs = [{ title: "Tell us about the most relevant project you've worked on", type: "paragraph", options: [] }];
+  const base = r({ question: qs[0].title, op: "ai_expected", action: "score" });
+  assert.match(validateRule({ ...base, instruction: "" }, qs)!, /expected answer/);
+  assert.equal(validateRule({ ...base, instruction: "I led an LLM evaluation platform for 3 product teams, owning requirements and metrics." }, qs), null);
+  assert.match(describeRule(base), /compares with the expected answer/);
+});
+
 test("answerFor matches titles loosely; describeRule reads naturally", () => {
   const answers = [{ question: "Years  of Experience", answer: "4" }];
   assert.equal(answerFor(r({}), answers), "4");

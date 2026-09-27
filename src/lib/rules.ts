@@ -4,6 +4,7 @@
 // Pure module — used by stage 1, stage 2, the rubric editor and tests.
 
 export type RuleOp =
+  | "ai_expected" // open-ended answer: the AI grades it against the expected answer in `instruction`
   | "ai" // free text: the AI checks the answer against `instruction`
   | "gte" // number at least
   | "lte" // number at most
@@ -25,13 +26,18 @@ export interface FormRule {
   value2?: number | null;
   options?: string[] | null;
   date?: string | null; // YYYY-MM-DD
-  /** op "ai" only: the requirement in plain words, e.g. "Based in Bengaluru or willing to relocate" */
+  /**
+   * op "ai": the requirement in plain words, e.g. "Based in Bengaluru or willing to relocate".
+   * op "ai_expected": a sample strong answer the candidate's answer is graded against.
+   */
   instruction?: string | null;
   action: RuleAction;
 }
 
-/** Filters the AI judges (free-text answers) vs. ones checked exactly in code. */
-export const isAiRule = (r: FormRule | null | undefined) => r?.op === "ai";
+/** Filters the AI judges (free-text and open-ended answers) vs. ones checked exactly in code. */
+export const isAiRule = (r: FormRule | null | undefined) => r?.op === "ai" || r?.op === "ai_expected";
+/** Open-ended answers graded against an expected answer (meets / borderline / not met). */
+export const isExpectedAnswerRule = (r: FormRule | null | undefined) => r?.op === "ai_expected";
 
 export type RuleOutcome = "pass" | "fail" | "unclear";
 
@@ -43,6 +49,7 @@ export interface RuleCheck {
 }
 
 export const OP_LABEL: Record<RuleOp, string> = {
+  ai_expected: "AI compares with the expected answer",
   ai: "AI checks that it's…",
   gte: "is at least",
   lte: "is at most",
@@ -132,7 +139,7 @@ export function checkRule(rule: FormRule, answer: string | null | undefined): Ru
   }
   if (rule.op === "answered") return { outcome: "pass", detail: `${said}.`, answer: a };
   // AI filters are judged by the AI reviewer, not here.
-  if (rule.op === "ai") return { outcome: "unclear", detail: `${said} — needs the AI check.`, answer: a };
+  if (rule.op === "ai" || rule.op === "ai_expected") return { outcome: "unclear", detail: `${said} — needs the AI check.`, answer: a };
 
   if (rule.op === "gte" || rule.op === "lte" || rule.op === "between") {
     const r = MONEY_Q.test(rule.question) ? parseLakhs(a) : parseRange(a);
@@ -186,6 +193,7 @@ export function answerFor(rule: FormRule, answers: { question: string; answer: s
 /** e.g. 'Years of experience is at least 3 → Reject if not met' */
 export function describeRule(rule: FormRule) {
   if (rule.op === "ai") return `“${rule.question}” — AI checks: ${rule.instruction?.trim() || "(no requirement written yet)"}`;
+  if (rule.op === "ai_expected") return `“${rule.question}” — AI compares with the expected answer`;
   let target = "";
   if (rule.op === "gte" || rule.op === "lte") target = ` ${fmtN(Number(rule.value ?? 0))}`;
   else if (rule.op === "between") target = ` ${fmtN(Number(rule.value ?? 0))} and ${fmtN(Number(rule.value2 ?? 0))}`;
@@ -204,6 +212,9 @@ export function opsFor(type: string | null | undefined): RuleOp[] {
       return ["includes_any", "includes_all", "answered", "ai"];
     case "date":
       return ["date_before", "date_after", "answered"];
+    case "paragraph":
+      // open-ended: graded against an expected answer
+      return ["ai_expected", "ai", "answered"];
     default:
       // free text: the AI check first, exact number checks still available
       return ["ai", "gte", "lte", "between", "in", "not_in", "answered"];
@@ -234,6 +245,10 @@ export function validateRule(rule: FormRule, questions: RuleQuestion[]): string 
     return "A maximum on years of experience acts as an age filter. Use “at least” instead.";
   }
   if (!["reject", "flag", "score"].includes(rule.action)) return "Choose what happens when the rule isn't met.";
+  if (rule.op === "ai_expected") {
+    if ((rule.instruction ?? "").trim().length < 20) return "Write or generate the expected answer the AI should compare against.";
+    return null;
+  }
   if (rule.op === "ai") {
     if ((rule.instruction ?? "").trim().length < 5) return "Write the requirement for the AI to check, e.g. “Based in Bengaluru or willing to relocate”.";
     if (EXPERIENCE.test(rule.question) && /\b(at most|no more than|maximum|max|under|less than|below)\b/i.test(rule.instruction ?? "")) {

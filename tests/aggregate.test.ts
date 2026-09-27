@@ -53,6 +53,19 @@ test("stage 1: passed filters earn points; unclear earns half; stage 2 ignores t
   assert.equal(aggregate([rule("reject", "pass", 10)], 0.7, { filterPoints: true }).aiJudged, false);
 });
 
+test("open-ended answers graded against an expected answer score, flag or reject", () => {
+  const graded = (action: "reject" | "flag" | "score", decision: string, weight = 50, confidence = 0.9) =>
+    ({ kind: "rule" as const, action, weight, decision: decision as never, confidence, judgedByAi: true });
+  const opts = { filterPoints: true };
+  assert.equal(aggregate([rule("reject", "pass", 50), graded("score", "borderline")], 0.7, opts).score, 75);
+  assert.equal(aggregate([graded("flag", "not_met")], 0.7, opts).needsReview, true);
+  assert.equal(aggregate([graded("reject", "not_met")], 0.7, opts).disqualified, true);
+  const r = aggregate([rule("reject", "pass", 50), graded("score", "meets", 50, 0.6)], 0.7, opts);
+  assert.equal(r.aiJudged, true);
+  assert.equal(r.confidence, 0.6);
+  assert.equal(r.needsReview, true); // low AI confidence
+});
+
 test("score-rules add weighted points; rules don't lower AI confidence", () => {
   const r = aggregate([soft(50, "meets"), rule("score", "fail", 50)], 0.7);
   assert.equal(r.score, 50);

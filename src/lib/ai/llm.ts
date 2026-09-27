@@ -64,36 +64,28 @@ function normaliseWeights<T extends { weight: number }>(items: T[]) {
   return items;
 }
 
-// ---------------- stage 1 rubric: form filters + scoring of free-text answers ----------------
+// ---------------- stage 1 rubric: one check per form question ----------------
 
 const Stage1Draft = z.object({
   filters: z
     .array(
       z.object({
-        name: z.string().describe("Short label, e.g. 'Notice period ≤ 60 days'"),
+        name: z.string().describe("Short label, e.g. 'Notice period ≤ 60 days' or 'Relevant project experience'"),
         question: z.string().describe("The form question title, copied EXACTLY from the list"),
-        op: z.enum(["ai", "gte", "lte", "between", "in", "not_in", "includes_any", "includes_all", "date_before", "date_after", "answered"]),
+        op: z.enum(["ai_expected", "ai", "gte", "lte", "between", "in", "not_in", "includes_any", "includes_all", "date_before", "date_after", "answered"]),
         value: z.number().nullable().describe("Number for gte/lte/between (pay in lakhs per annum), else null"),
         value2: z.number().nullable().describe("Upper bound for between, else null"),
         options: z.array(z.string()).nullable().describe("For in/not_in/includes_*: options copied EXACTLY from the question; else null"),
         date: z.string().nullable().describe("YYYY-MM-DD for date checks, else null"),
-        instruction: z.string().nullable().describe("For op 'ai' only: the requirement in plain words; else null"),
+        instruction: z.string().nullable().describe("op 'ai': the requirement in plain words. op 'ai_expected': the expected answer. Else null"),
         action: z.enum(["reject", "flag", "score"]),
         source_constraint: z.string().nullable().describe("The recruiter constraint this came from, quoted verbatim; null if suggested from the JD"),
       }),
     )
-    .describe("One filter per form question that helps screen candidates"),
-  criteria: z
-    .array(
-      z.object({
-        name: z.string(),
-        description: z.string().describe("What a strong answer looks like, judged from the candidate's free-text form answers"),
-        weight: z.number().int(),
-        bias_flag: z.string().nullable(),
-      }),
-    )
-    .describe("2–5 scored criteria judged from the open-ended form answers"),
+    .describe("One check per form question worth screening on, including each open-ended question"),
 });
+
+const EXPECTED_ANSWER_GUIDE = `An expected answer is a short sample of what a strong candidate for THIS job would write (3–5 sentences, first person), naming the kinds of specifics that matter — the type of product or project, their own role and decisions, tools or methods, and a concrete outcome. It is a yardstick for relevance and substance, not a script: candidates who cover similar ground in their own words, even briefly, should match it.`;
 export type Stage1Draft = z.infer<typeof Stage1Draft>;
 
 export async function draftStage1(input: {
@@ -107,7 +99,7 @@ export async function draftStage1(input: {
     name: "stage1_rubric",
     system: `You design STAGE 1 of a two-stage hiring screen for one job. Stage 1 uses ONLY the candidate's answers to the application form; a recruiter then picks who goes to stage 2 (CV review).
 
-Filters (one per form question worth screening on — location, experience, expected CTC, notice period, work mode, authorisation…):
+Checks (one per form question worth screening on — location, experience, expected CTC, notice period, work mode, authorisation, and each open-ended question):
 - Use the recruiter's constraints first (quote them in source_constraint). You may also suggest filters the JD clearly implies (source_constraint null), with action "flag" rather than "reject".
 - Structured questions (dropdown / choice / checkbox / date): use an exact op and copy options exactly. For dropdowns of ranges, prefer "in" with the qualifying options.
 - Free-text questions (short answer / paragraph, e.g. "Current city", "Expected CTC"): use op "ai" with a plain-language instruction the AI can check against any wording ("Based in Bengaluru or willing to relocate"; "Expected CTC at most 25 LPA; treat 'negotiable' as unclear"). Pay is in lakhs per annum.
@@ -116,8 +108,7 @@ Filters (one per form question worth screening on — location, experience, expe
 - For op "ai", write the instruction as the requirement an acceptable answer meets, not as an action: "Expected CTC is at most 30 LPA (30 lakhs = 3,000,000 INR per year); a range passes if its lower end is within limit", not "Reject if CTC is above 30 LPA". Blank, vague or "negotiable" answers are handled as unclear automatically.
 - action: "reject" for hard requirements, "flag" for preferences, "score" only when the recruiter wants to reward it.
 - Never filter on the candidate's name, email, CV link, portfolio or GitHub questions.
-
-Criteria: 2–5 weighted criteria judged from the open-ended answers (e.g. "Describe a project…") — what separates strong from weak answers for this JD. Weights are integers summing to 100.
+- Open-ended questions ([paragraph], e.g. "Tell us about the most relevant project you've worked on"): add one check with op "ai_expected", action "score", and an instruction that is the expected answer. ${EXPECTED_ANSWER_GUIDE}
 ${FAIRNESS}`,
     user: `<job_title>${input.title}</job_title>
 <job_description>
@@ -130,8 +121,22 @@ ${input.constraints || "(none)"}
 ${input.questions.map((q) => `- ${JSON.stringify(q.title)} [${q.type}]${q.options.length ? ` options: ${q.options.map((o) => JSON.stringify(o)).join(", ")}` : ""}`).join("\n") || "(none)"}
 </form_questions>`,
   });
-  normaliseWeights(output.criteria);
   return { draft: output, model, provider };
+}
+
+/** A sample strong answer to one open-ended form question, derived from the JD. */
+export async function draftExpectedAnswer(input: { title: string; description: string; question: string }) {
+  const { output } = await structured({
+    schema: z.object({ expected_answer: z.string() }),
+    name: "expected_answer",
+    system: `You write the expected answer a recruiter's AI uses to grade one open-ended application question. ${EXPECTED_ANSWER_GUIDE} Base it only on the job description. Don't mention the company's name, and don't include personal details, years of age or other protected characteristics.`,
+    user: `<job_title>${input.title}</job_title>
+<job_description>
+${input.description}
+</job_description>
+<question>${input.question}</question>`,
+  });
+  return output.expected_answer.trim();
 }
 
 // ---------------- stage 2 rubric: CV + portfolio + GitHub ----------------

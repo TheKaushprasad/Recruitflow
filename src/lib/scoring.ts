@@ -4,7 +4,7 @@ import { jevDecide, type JevChoiceQuestion } from "./ai/jev";
 import { reviewCandidate, type ReviewCriterion } from "./ai/llm";
 import { env } from "./env";
 import { aggregate } from "./aggregate";
-import { answerFor, checkRule, isAiRule } from "./rules";
+import { answerFor, checkRule, isAiRule, isExpectedAnswerRule } from "./rules";
 import type { Candidate, Criterion, CriterionResult, Decision, Job } from "./types";
 
 export interface Final {
@@ -26,6 +26,18 @@ const sig = (c: Pick<Criterion, "kind" | "name" | "description" | "rule">) =>
 
 /** How an AI-judged item is presented to Jev / the reviewer. AI-check filters are pass/fail filters on one answer. */
 function asReview(c: Criterion): { kind: "hard" | "soft"; name: string; description: string } {
+  if (c.kind === "rule" && isExpectedAnswerRule(c.rule)) {
+    return {
+      kind: "soft",
+      name: c.name,
+      description:
+        `Grade the answer to “${c.rule!.question}” using the expected answer below as a yardstick of relevance and substance — NOT a checklist. ` +
+        `"meets" = clearly the same kind of work AND at least two concrete specifics (their own role or decisions, what was built, tools, or an outcome/metric); it does NOT need to cover every point in the expected answer. ` +
+        `"borderline" = relevant but vague or generic (few or no specifics), or only loosely related work described specifically. ` +
+        `"not_met" = unrelated work, or empty/non-answer. Never penalise brevity or writing style. ` +
+        `Expected answer: ${c.rule!.instruction}`,
+    };
+  }
   if (c.kind === "rule") {
     return { kind: "hard", name: c.name, description: `Answer to “${c.rule!.question}” must meet: ${c.rule!.instruction}` };
   }
@@ -190,15 +202,19 @@ export async function scoreCandidate(db: SupabaseClient, job: Job, rubricId: str
 
   const finals = [...ruleFinals, ...aiFinals];
   const agg = aggregate(
-    finals.map((f) => ({ kind: f.criterion.kind, action: f.criterion.rule?.action, weight: f.criterion.weight, decision: f.decision, confidence: f.confidence })),
+    finals.map((f) => ({
+      kind: f.criterion.kind, action: f.criterion.rule?.action, weight: f.criterion.weight,
+      decision: f.decision, confidence: f.confidence, judgedByAi: f.scoredBy !== "rule",
+    })),
     threshold,
     { filterPoints: true }, // passing stage-1 filters counts toward the stage-1 score
   );
 
+  const isFail = (d: Decision) => d === "fail" || d === "not_met";
   const failedFilter =
     rejectedBy ??
-    aiFinals.find((f) => f.decision === "fail" && (f.criterion.kind === "hard" || f.criterion.rule?.action === "reject"));
-  const flagged = finals.filter((f) => f.criterion.kind === "rule" && (f.decision === "unclear" || (f.criterion.rule!.action === "flag" && f.decision === "fail")));
+    aiFinals.find((f) => (f.criterion.kind === "hard" && f.decision === "fail") || (f.criterion.rule?.action === "reject" && isFail(f.decision)));
+  const flagged = finals.filter((f) => f.criterion.kind === "rule" && (f.decision === "unclear" || (f.criterion.rule!.action === "flag" && isFail(f.decision))));
   let reason: string;
   if (rejectedBy) reason = `Fails filter “${rejectedBy.criterion.name}”: ${rejectedBy.evidence} AI screening skipped.`;
   else if (failedFilter) reason = `Fails “${failedFilter.criterion.name}”: ${failedFilter.evidence}`;

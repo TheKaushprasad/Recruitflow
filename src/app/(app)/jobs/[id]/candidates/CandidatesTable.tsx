@@ -52,15 +52,17 @@ export function CandidatesTable(props: {
   /** Stage-1 breakdown: filters passed, the free-text answers' own score, and what needs review. */
   const breakdown = (e: NonNullable<CandidateRow["evaluation"]>) => {
     const rs = e.criterion_results.map((r) => ({ r, c: critById.get(r.criterion_id) })).filter((x) => x.c);
-    const filters = rs.filter((x) => x.c!.kind === "rule");
-    const soft = rs.filter((x) => x.c!.kind === "soft");
-    const w = soft.reduce((a, x) => a + x.c!.weight, 0);
+    // Filters = single-answer checks; Answers = open-ended answers graded against an expected answer (or older criteria).
+    const graded = (x: (typeof rs)[number]) => x.c!.kind === "soft" || (x.c!.kind === "rule" && x.c!.rule?.op === "ai_expected");
+    const filters = rs.filter((x) => x.c!.kind === "rule" && !graded(x));
+    const open = rs.filter(graded);
+    const w = open.reduce((a, x) => a + (x.c!.weight || 1), 0);
     const val: Record<string, number> = { meets: 1, borderline: 0.5, not_met: 0 };
-    const answers = w ? Math.round((soft.reduce((a, x) => a + x.c!.weight * (val[x.r.decision] ?? 0), 0) / w) * 100) : null;
+    const answers = w ? Math.round((open.reduce((a, x) => a + (x.c!.weight || 1) * (val[x.r.decision] ?? 0), 0) / w) * 100) : null;
     const review = rs
       .filter(({ r, c }) =>
         r.decision === "unclear" ||
-        (c!.kind === "rule" && c!.rule?.action === "flag" && r.decision === "fail") ||
+        (c!.kind === "rule" && c!.rule?.action === "flag" && (r.decision === "fail" || r.decision === "not_met")) ||
         (r.scored_by !== "rule" && Number(r.confidence) < threshold))
       .map(({ c }) => c!.name);
     return {

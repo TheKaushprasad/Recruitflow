@@ -1,5 +1,7 @@
 "use client";
 
+import { useAction } from "./Toast";
+import { generateExpectedAnswer } from "@/app/actions/rubric";
 import { ACTION_LABEL, OP_LABEL, describeRule, opsFor, validateRule, type FormRule, type RuleAction, type RuleOp, type RuleQuestion } from "@/lib/rules";
 
 export interface RuleRow {
@@ -14,21 +16,34 @@ export interface RuleRow {
 
 const ACTION_CHIP: Record<RuleAction, string> = { reject: "bad", flag: "warn", score: "good" };
 
-/** Questions worth filtering on: not identity/link questions, not long open-ended answers. */
+/** Questions worth a stage-1 check: everything except identity and link questions. */
 export function filterableQuestions(questions: RuleQuestion[]) {
   return questions.filter(
-    (q) => !q.role && q.type !== "paragraph" && !/\b(name|e-?mail|phone|mobile|resume|\bcv\b|portfolio|github|linkedin|website)\b/i.test(q.title),
+    (q) => !q.role && !/\b(name|e-?mail|phone|mobile|resume|\bcv\b|portfolio|github|linkedin|website)\b/i.test(q.title),
   );
 }
 
-/** A sensible starting filter for a question: exact for structured answers, AI check for free text. */
+const KIND_HINT = (type: string) =>
+  type === "paragraph" ? "open-ended → compare with expected answer" : type === "short" ? "free text → AI check" : "exact";
+
+/**
+ * A sensible starting check for a question: exact for structured answers, AI check for free text,
+ * and "compare with expected answer" (points, never rejects) for open-ended questions.
+ */
 export function newRule(questions: RuleQuestion[], title?: string): FormRule {
   const q = (title ? questions.find((x) => x.title === title) : undefined) ?? filterableQuestions(questions)[0] ?? questions[0];
   const op = opsFor(q?.type)[0];
-  return { question: q?.title ?? "", op, value: op === "gte" ? 3 : null, value2: null, options: [], date: null, instruction: "", action: "reject" };
+  return {
+    question: q?.title ?? "", op, value: op === "gte" ? 3 : null, value2: null, options: [], date: null, instruction: "",
+    action: op === "ai_expected" ? "score" : "reject",
+  };
 }
 
-export function FormRulesEditor({ rows, editable, questions, scoreTotal, onPatch, onRemove, onAdd }: {
+/** Default points for a new check: open-ended answers weigh more than single-field checks. */
+export const defaultPoints = (rule: FormRule) => (rule.op === "ai_expected" ? 30 : 10);
+
+export function FormRulesEditor({ jobId, rows, editable, questions, scoreTotal, onPatch, onRemove, onAdd }: {
+  jobId: string;
   rows: RuleRow[];
   editable: boolean;
   questions: RuleQuestion[];
@@ -44,21 +59,22 @@ export function FormRulesEditor({ rows, editable, questions, scoreTotal, onPatch
   return (
     <div className="panel">
       <div className="section-head" style={{ marginBottom: 6 }}>
-        <h3>Filters on form answers</h3>
-        <span className="muted" style={{ fontSize: 13 }}>Exact checks, or an AI check for free-text answers</span>
+        <h3>Checks on form answers</h3>
+        <span className="muted" style={{ fontSize: 13 }}>One per question · together they make the stage-1 score</span>
       </div>
       <p className="hint" style={{ margin: "0 0 10px" }}>
-        Dropdowns, numbers and dates are checked exactly in code. Free-text answers (“Bangalore / BLR”, “12L”) use an AI check against the requirement you write.
+        Dropdowns, numbers and dates are checked exactly in code. Short free-text answers (“Bangalore / BLR”, “12L”) use an AI check against the requirement you write.
+        Open-ended answers (“Tell us about a project…”) are graded by AI against an expected answer you write or generate from the JD.
         Blank or unclear answers are flagged for review, never rejected.
       </p>
 
       {editable && suggestions.length > 0 && (
         <div className="status-box" style={{ margin: "0 0 12px" }}>
-          <b style={{ fontSize: 13.5 }}>Form questions without a filter</b>
+          <b style={{ fontSize: 13.5 }}>Form questions without a check</b>
           <div className="row" style={{ gap: 6 }}>
             {suggestions.map((q) => (
               <button key={q.title} type="button" className="pillbtn btn-ghost btn-sm" onClick={() => onAdd(q.title)}>
-                + {q.title} <span className="muted" style={{ fontWeight: 400 }}>· {q.type === "short" ? "free text → AI check" : "exact"}</span>
+                + {q.title} <span className="muted" style={{ fontWeight: 400 }}>· {KIND_HINT(q.type)}</span>
               </button>
             ))}
           </div>
@@ -67,13 +83,13 @@ export function FormRulesEditor({ rows, editable, questions, scoreTotal, onPatch
 
       {rows.length === 0 && (
         <p className="muted" style={{ fontSize: 14 }}>
-          No filters. {editable ? "Add one from the suggestions above, or with “+ Add filter”." : "Click Edit to add some."}
+          No checks yet. {editable ? "Add one from the suggestions above, or with “+ Add check”." : "Click Edit to add some."}
         </p>
       )}
 
       {rows.map((r) =>
         editable ? (
-          <RuleEditorRow key={r.id} row={r} questions={questions} scoreTotal={scoreTotal} onPatch={(p) => onPatch(r.id, p)} onRemove={() => onRemove(r.id)} />
+          <RuleEditorRow key={r.id} jobId={jobId} row={r} questions={questions} scoreTotal={scoreTotal} onPatch={(p) => onPatch(r.id, p)} onRemove={() => onRemove(r.id)} />
         ) : (
           <div className="hard" key={r.id} style={{ opacity: r.enabled ? 1 : 0.5 }}>
             <span className={`chip ${r.rule ? ACTION_CHIP[r.rule.action] : "neutral"}`} style={{ flex: "none" }}>
@@ -92,21 +108,24 @@ export function FormRulesEditor({ rows, editable, questions, scoreTotal, onPatch
       {editable && (
         <button className="pillbtn btn-ghost btn-sm" style={{ marginTop: 12 }} onClick={() => onAdd()} disabled={!questions.length}
           title={!questions.length ? "Add form questions in Job setup first" : undefined}>
-          + Add filter
+          + Add check
         </button>
       )}
     </div>
   );
 }
 
-function RuleEditorRow({ row, questions, scoreTotal, onPatch, onRemove }: {
+function RuleEditorRow({ jobId, row, questions, scoreTotal, onPatch, onRemove }: {
+  jobId: string;
   row: RuleRow;
   questions: RuleQuestion[];
   scoreTotal: number;
   onPatch: (p: Partial<RuleRow>) => void;
   onRemove: () => void;
 }) {
+  const { run, pending } = useAction();
   const rule = row.rule!;
+  const isExpected = rule.op === "ai_expected";
   const q = questions.find((x) => x.title.trim().toLowerCase() === rule.question.trim().toLowerCase());
   const ops = opsFor(q?.type);
   const setRule = (p: Partial<FormRule>) => onPatch({ rule: { ...rule, ...p } });
@@ -139,7 +158,12 @@ function RuleEditorRow({ row, questions, scoreTotal, onPatch, onRemove }: {
           {!q && <option value={rule.question}>{rule.question || "Choose a question"}</option>}
           {questions.map((x) => <option key={x.title} value={x.title}>{x.title}</option>)}
         </select>
-        <select id={`ro-${id}`} aria-label="Condition" value={rule.op} style={{ flex: "1 1 150px" }} onChange={(e) => setRule({ op: e.target.value as RuleOp })}>
+        <select id={`ro-${id}`} aria-label="Condition" value={rule.op} style={{ flex: "1 1 150px" }}
+          onChange={(e) => {
+            const op = e.target.value as RuleOp;
+            // grading an open-ended answer adds points by default rather than rejecting
+            setRule({ op, ...(op === "ai_expected" && rule.action === "reject" ? { action: "score" as const } : {}) });
+          }}>
           {ops.map((o) => <option key={o} value={o}>{OP_LABEL[o]}</option>)}
         </select>
         {needsNumber && (
@@ -154,6 +178,29 @@ function RuleEditorRow({ row, questions, scoreTotal, onPatch, onRemove }: {
           <input type="date" id={`rd-${id}`} aria-label="Date" value={rule.date ?? ""} style={{ flex: "0 1 170px" }} onChange={(e) => setRule({ date: e.target.value || null })} />
         )}
       </div>
+
+      {isExpected && (
+        <div style={{ display: "grid", gap: 6 }}>
+          <div className="row" style={{ justifyContent: "space-between", gap: 8 }}>
+            <label className="f" htmlFor={`rx-${id}`} style={{ margin: 0 }}>Expected answer</label>
+            <button type="button" className="pillbtn btn-ghost btn-sm" disabled={pending || !rule.question}
+              title="OpenAI writes a sample strong answer to this question, based on the job description"
+              onClick={async () => {
+                if ((rule.instruction ?? "").trim().length > 20 && !window.confirm("Replace the current expected answer?")) return;
+                const r = await run(() => generateExpectedAnswer(jobId, rule.question));
+                if (r.ok && "answer" in r && r.answer) setRule({ instruction: r.answer });
+              }}>
+              {pending ? <><span className="spin" /> Writing…</> : "Generate from JD with AI"}
+            </button>
+          </div>
+          <textarea id={`rx-${id}`} rows={4} value={rule.instruction ?? ""} onChange={(e) => setRule({ instruction: e.target.value })}
+            placeholder="What a strong answer from a good-fit candidate would say, e.g. the kind of project, their role, tools used and a measurable outcome."
+            style={{ fontSize: 13.5 }} />
+          <p className="hint" style={{ margin: 0 }}>
+            The AI grades each candidate&apos;s answer against this as meets / partly / not met — on relevance and substance, not length or writing style.
+          </p>
+        </div>
+      )}
 
       {isAi && (
         <textarea id={`ri-${id}`} rows={2} aria-label="Requirement for the AI to check" value={rule.instruction ?? ""}

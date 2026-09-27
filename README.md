@@ -14,7 +14,8 @@ The rubric has two stages, each with full add / edit / delete on the **Rubric** 
      - Free-text answers ("Bangalore / BLR", "12L", "12,00,000") get an **AI check** against a requirement you write in plain words.
      - Each filter rejects, flags for review, or adds points. Blank or unclear answers are flagged, never rejected.
      - Failing an exact reject-filter stops the candidate before any AI cost.
-   - **Scored criteria** rate the open-ended answers.
+   - **Open-ended questions** ("Tell us about a project…") are graded by AI against an **expected answer**. You write it, or click **Generate from JD with AI**. It's a yardstick for relevance and substance, not a checklist, so short but specific answers can meet it.
+   - Every check earns points when met, and together they make the stage-1 score.
    - **How AI items are judged:** Jev decides first, OpenAI rechecks anything under the confidence threshold (0.70 by default) and writes the evidence. Unchanged AI items are reused across rubric versions, so editing filters, weights or stage 2 re-applies instantly and for free.
 2. **You decide who moves on.** Based on the stage-1 score and reasons, click **Move to stage 2**, for one candidate or up to 10 at a time.
 3. **Stage 2 · CV, portfolio and GitHub review (starts on the move).**

@@ -5,7 +5,7 @@ import { after } from "next/server";
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { draftStage1, draftStage2 } from "@/lib/ai/llm";
+import { draftExpectedAnswer, draftStage1, draftStage2 } from "@/lib/ai/llm";
 import { scorePending } from "@/lib/pipeline";
 import { getRuleQuestions } from "@/lib/data";
 import { describeRule, validateRule, type FormRule } from "@/lib/rules";
@@ -99,13 +99,11 @@ export async function generateStage(jobId: string, stage: 1 | 2): Promise<Action
         if (validateRule(rule, questions)) { dropped++; continue; }
         filters.push({
           stage: 1, kind: "rule", name: f.name, description: describeRule(rule), rule,
-          weight: 10, source_constraint: f.source_constraint, // points when passed
+          // points when passed; open-ended answers weigh more than single-field checks
+          weight: f.op === "ai_expected" ? 30 : 10, source_constraint: f.source_constraint,
         });
       }
-      rows = [
-        ...filters,
-        ...res.draft.criteria.map((c) => ({ stage: 1, kind: "soft", name: c.name, description: c.description, weight: c.weight, bias_flag: c.bias_flag })),
-      ];
+      rows = filters;
     } else {
       const res = await draftStage2(job);
       model = res.model;
@@ -128,6 +126,21 @@ export async function generateStage(jobId: string, stage: 1 | 2): Promise<Action
       ok: true,
       message: `Stage ${stage} drafted with OpenAI — review it, then approve.${dropped ? ` ${dropped} suggested filter${dropped === 1 ? " was" : "s were"} skipped (didn't match a form question or failed the fairness check).` : ""}`,
     };
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+/** OpenAI writes a sample strong answer to an open-ended form question, from the job description. */
+export async function generateExpectedAnswer(jobId: string, question: string): Promise<ActionResult & { answer?: string }> {
+  try {
+    const { supabase } = await requireUser();
+    const { data: job } = await supabase.from("jobs").select("title, description").eq("id", jobId).single();
+    if (!job) return { ok: false, error: "Job not found." };
+    if (job.description.trim().length < 80) return { ok: false, error: "Add a fuller job description in Job setup first — the expected answer is based on it." };
+    if (!question.trim()) return { ok: false, error: "Pick the question first." };
+    const answer = await draftExpectedAnswer({ title: job.title, description: job.description, question });
+    return { ok: true, message: "Expected answer drafted — edit it as you like.", answer };
   } catch (e) {
     return fail(e);
   }

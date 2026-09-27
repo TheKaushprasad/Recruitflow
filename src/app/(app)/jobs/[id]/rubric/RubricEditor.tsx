@@ -5,7 +5,7 @@ import { useMemo, useState } from "react";
 import { useAction } from "@/components/Toast";
 import { approveRubric, discardDraft, editRubric, generateStage, saveDraft, type NewCriterion } from "@/app/actions/rubric";
 import { updateJobSettings } from "@/app/actions/jobs";
-import { FormRulesEditor, newRule } from "@/components/FormRulesEditor";
+import { FormRulesEditor, defaultPoints, newRule } from "@/components/FormRulesEditor";
 import { providerLabel } from "@/lib/ai/provider";
 import type { RuleQuestion } from "@/lib/rules";
 import type { Criterion, Job, Rubric } from "@/lib/types";
@@ -144,7 +144,7 @@ export function RubricEditor({ job, current, draft, candidateCount, questions }:
           <div className="row" style={{ justifyContent: "space-between" }}>
             <p className="hint" style={{ margin: 0, maxWidth: "52ch" }}>
               {tab === 1
-                ? "Every applicant, automatically, as soon as they apply. Filters check single answers; scored criteria rate the open-ended answers. The result is the stage-1 score you use to decide who moves on."
+                ? "Every applicant, automatically, as soon as they apply. One check per form question — exact, AI-checked, or (for open-ended answers) graded against an expected answer. Their points make up the stage-1 score you use to decide who moves on."
                 : "Only for candidates you move to stage 2. OpenAI judges each criterion from the JD plus their CV, portfolio, GitHub and form answers, and cites where each piece of evidence came from."}
             </p>
             {genButton(tab)}
@@ -157,6 +157,7 @@ export function RubricEditor({ job, current, draft, candidateCount, questions }:
           {tab === 1 ? (
             <>
               <FormRulesEditor
+                jobId={job.id}
                 rows={of(1, "rule")}
                 editable={editable}
                 questions={questions}
@@ -165,15 +166,23 @@ export function RubricEditor({ job, current, draft, candidateCount, questions }:
                 onRemove={remove}
                 onAdd={(question) => {
                   const rule = newRule(questions, question);
-                  add({ stage: 1, kind: "rule", name: rule.question || "New filter", description: "", weight: 10, rule });
+                  add({ stage: 1, kind: "rule", name: rule.question || "New check", description: "", weight: defaultPoints(rule), rule });
                 }}
               />
               {of(1, "hard").length > 0 && (
                 <CriteriaList title="Other AI-judged filters" hint="Disqualify when not met — judged from the form answers" stage={1} kind="hard"
                   rows={of(1, "hard")} editable={editable} total={total1} onPatch={patch} onRemove={remove} onAdd={add} />
               )}
-              <CriteriaList title="Scored criteria for free-text answers" hint="Rate the open-ended answers; make up the stage-1 score" stage={1} kind="soft"
-                rows={of(1, "soft")} editable={editable} total={total1} onPatch={patch} onRemove={remove} onAdd={add} />
+              {of(1, "soft").length > 0 && (
+                <>
+                  <div className="note" style={{ margin: 0 }}>
+                    <b>Older-style criteria below.</b> Open-ended answers are now checked per question above (“AI compares with the expected answer”).
+                    {editable ? " Delete these once you've added a check for your open-ended question." : " Click Edit to replace them."}
+                  </div>
+                  <CriteriaList title="Older criteria on free-text answers" hint="Still used until you delete them" stage={1} kind="soft"
+                    rows={of(1, "soft")} editable={editable} total={total1} onPatch={patch} onRemove={remove} onAdd={add} hideAdd />
+                </>
+              )}
             </>
           ) : (
             <>
@@ -250,7 +259,8 @@ export function RubricEditor({ job, current, draft, candidateCount, questions }:
   );
 }
 
-function CriteriaList({ title, hint, stage, kind, rows, editable, total, onPatch, onRemove, onAdd }: {
+function CriteriaList({ title, hint, stage, kind, rows, editable, total, onPatch, onRemove, onAdd, hideAdd }: {
+  hideAdd?: boolean;
   title: string;
   hint: string;
   stage: 1 | 2;
@@ -299,7 +309,7 @@ function CriteriaList({ title, hint, stage, kind, rows, editable, total, onPatch
           </div>
         </div>
       ))}
-      {editable && (
+      {editable && !hideAdd && (
         <button className="pillbtn btn-ghost btn-sm" style={{ marginTop: 12 }} onClick={() =>
           onAdd({
             stage, kind, weight: kind === "soft" ? 10 : 0, rule: null,
