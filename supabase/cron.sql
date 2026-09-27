@@ -10,7 +10,17 @@
 create extension if not exists pg_cron;
 create extension if not exists pg_net;
 
-select vault.create_secret('<CRON_SECRET>', 'recruitflow_cron_secret');
+-- Store the secret, or replace it if this script was run before.
+do $$
+declare
+  existing uuid := (select id from vault.secrets where name = 'recruitflow_cron_secret');
+begin
+  if existing is null then
+    perform vault.create_secret('<CRON_SECRET>', 'recruitflow_cron_secret');
+  else
+    perform vault.update_secret(existing, '<CRON_SECRET>');
+  end if;
+end $$;
 
 select cron.schedule(
   'recruitflow-worker',
