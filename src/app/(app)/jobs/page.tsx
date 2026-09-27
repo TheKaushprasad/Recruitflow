@@ -1,104 +1,119 @@
-import Link from "next/link";
 import { requireUser } from "@/lib/supabase/server";
-import { NewJobForm, type JobOption } from "./NewJobForm";
+import { nowMs } from "@/lib/format";
+import type { JobOption } from "./NewJobForm";
+import { JobsView, type JobStats } from "./_ui/JobsView";
+import { SORTS, type SortKey } from "./_ui/sorts";
+
+interface CandStat {
+  job_id: string;
+  score_status: string;
+  stage_id: string | null;
+  stage2_at: string | null;
+  evaluations: { rubric_id: string; needs_review: boolean; disqualified: boolean }[];
+}
+
+/** Show location filter and sort once a list is long enough to need them. */
+const FILTERS_FROM = 6;
+const count = (v: unknown) => (v as { count: number }[] | null)?.[0]?.count ?? 0;
 
 export default async function JobsPage({ searchParams }: PageProps<"/jobs">) {
   const sp = await searchParams;
+  const str = (k: string) => (typeof sp[k] === "string" ? (sp[k] as string).trim() : "");
   const view = sp.view === "closed" ? "closed" : "open";
-  const q = typeof sp.q === "string" ? sp.q.trim() : "";
-  const { supabase } = await requireUser();
+  const q = str("q").toLowerCase();
+  const loc = str("loc");
+  const sort: SortKey = str("sort") in SORTS ? (str("sort") as SortKey) : "newest";
+  const from = str("from") || undefined;
+  const { supabase, user } = await requireUser();
 
-  const [{ count: openCount }, { count: closedCount }] = await Promise.all([
-    supabase.from("jobs").select("id", { count: "exact", head: true }).eq("status", "open"),
-    supabase.from("jobs").select("id", { count: "exact", head: true }).eq("status", "closed"),
+  // One pass over the recruiter's jobs, candidates and upcoming interviews; everything else is computed here.
+  const now = nowMs();
+  const [{ data: jobRows }, { data: candRows }, { data: ivRows }] = await Promise.all([
+    supabase
+      .from("jobs")
+      .select("id, title, location, status, created_at, closed_at, based_on_job_id, google_form_id, sheet_id, current_rubric_id, last_synced_at, last_sync_error, description, form_questions(count), stages(count)")
+      .order("created_at", { ascending: false }),
+    supabase.from("candidates").select("job_id, score_status, stage_id, stage2_at, evaluations(rubric_id, needs_review, disqualified)"),
+    supabase
+      .from("interviews")
+      .select("job_id")
+      .gte("starts_at", new Date(now).toISOString())
+      .lte("starts_at", new Date(now + 7 * 864e5).toISOString()),
   ]);
-  let query = supabase
-    .from("jobs")
-    .select("id, title, location, status, created_at, closed_at, based_on_job_id, google_form_id, sheet_id, current_rubric_id, candidates(count)")
-    .eq("status", view)
-    .order(view === "closed" ? "closed_at" : "created_at", { ascending: false });
-  if (q) query = query.ilike("title", `%${q.replace(/[%_]/g, "")}%`);
-  const { data: jobs } = await query;
+  const allJobs = jobRows ?? [];
+
+  // Per-job funnel: applied → scored → stage 2 → in the interview pipeline.
+  const stats = new Map<string, JobStats>();
+  const rubricOf = new Map(allJobs.map((j) => [j.id, j.current_rubric_id as string | null]));
+  for (const c of (candRows ?? []) as CandStat[]) {
+    const s = stats.get(c.job_id) ?? { applied: 0, scored: 0, waiting: 0, review: 0, stage2: 0, pipeline: 0, failed: 0 };
+    const ev = c.evaluations.find((e) => e.rubric_id === rubricOf.get(c.job_id));
+    s.applied++;
+    if (ev) s.scored++;
+    else if (c.score_status === "error") s.failed++;
+    else s.waiting++;
+    if (ev?.needs_review && !ev.disqualified) s.review++;
+    if (c.stage2_at) s.stage2++;
+    if (c.stage_id) s.pipeline++;
+    stats.set(c.job_id, s);
+  }
+  const statOf = (id: string) => stats.get(id) ?? { applied: 0, scored: 0, waiting: 0, review: 0, stage2: 0, pipeline: 0, failed: 0 };
+
+  const openJobs = allJobs.filter((j) => j.status === "open");
+  const closedCount = allJobs.length - openJobs.length;
+  const sum = (k: "review" | "waiting" | "stage2") => openJobs.reduce((a, j) => a + statOf(j.id)[k], 0);
+  const openIds = new Set(openJobs.map((j) => j.id));
+  const interviewsSoon = (ivRows ?? []).filter((i) => openIds.has(i.job_id)).length;
+
+  const inView = allJobs.filter((j) => j.status === view);
+  const locations = [...new Set(inView.map((j) => j.location?.trim()).filter(Boolean) as string[])].sort();
+  const jobs = inView
+    .filter((j) => !q || `${j.title} ${j.location ?? ""}`.toLowerCase().includes(q))
+    .filter((j) => !loc || j.location?.trim() === loc)
+    .sort((a, b) => {
+      switch (sort) {
+        case "oldest": return a.created_at.localeCompare(b.created_at);
+        case "applicants": return statOf(b.id).applied - statOf(a.id).applied;
+        case "review": return statOf(b.id).review - statOf(a.id).review;
+        default: return (view === "closed" ? (b.closed_at ?? "").localeCompare(a.closed_at ?? "") : 0) || b.created_at.localeCompare(a.created_at);
+      }
+    });
 
   // Every job (open and closed) is a possible template for a new one.
-  const { data: allJobs } = await supabase
-    .from("jobs")
-    .select("id, title, location, status, based_on_job_id, current_rubric_id, created_at, closed_at, description, candidates(count), form_questions(count), stages(count)")
-    .order("created_at", { ascending: false });
-  const count = (v: unknown) => (v as { count: number }[] | null)?.[0]?.count ?? 0;
-  const options: JobOption[] = (allJobs ?? []).map((j) => ({
+  const options: JobOption[] = allJobs.map((j) => ({
     id: j.id, title: j.title, location: j.location, status: j.status, based_on_job_id: j.based_on_job_id,
     current_rubric_id: j.current_rubric_id, created_at: j.created_at, closed_at: j.closed_at,
-    applicants: count(j.candidates), questions: count(j.form_questions), stages: count(j.stages),
+    applicants: statOf(j.id).applied, questions: count(j.form_questions), stages: count(j.stages),
     hasDescription: Boolean(j.description?.trim()),
   }));
-  const titleOf = new Map(options.map((o) => [o.id, o.title]));
-  const from = typeof sp.from === "string" ? sp.from : undefined;
-  const fmt = (d: string | null) => (d ? new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "");
+  const titleOf = new Map(allJobs.map((j) => [j.id, j.title]));
+  const m = user.user_metadata;
+  const fullName = [m.full_name, m.name].find((v): v is string => typeof v === "string" && !!v.trim());
+  const firstName = fullName?.trim().split(/\s+/)[0] ?? null;
+
 
   return (
-    <>
-      {sp.deleted && <div className="banner ok"><div className="txt">Job deleted.</div></div>}
-      <div className="section-head">
-        <div>
-          <p className="eyebrow" style={{ margin: "0 0 8px" }}>Job postings</p>
-          <h2>{(openCount ?? 0) + (closedCount ?? 0) ? `${openCount ?? 0} open · ${closedCount ?? 0} closed` : "Set up your first job"}</h2>
-          <p>Each job gets one rubric, one application form and one pipeline. Closed jobs keep all their candidates, scores and interviews.</p>
-        </div>
-      </div>
-
-      {view === "open" && <NewJobForm key={from ?? "blank"} jobs={options} initialSource={from} />}
-
-      <div className="toolbar">
-        <div className="filters">
-          <Link href="/jobs" aria-pressed={view === "open"} className="filter-link">Open <span className="mono">{openCount ?? 0}</span></Link>
-          <Link href="/jobs?view=closed" aria-pressed={view === "closed"} className="filter-link">Closed <span className="mono">{closedCount ?? 0}</span></Link>
-        </div>
-        <form action="/jobs" style={{ marginLeft: "auto" }}>
-          {view === "closed" && <input type="hidden" name="view" value="closed" />}
-          <input type="search" name="q" id="jobsearch" defaultValue={q} placeholder="Search job titles" aria-label="Search job titles" />
-        </form>
-      </div>
-
-      {jobs?.length ? (
-        <div className="jobs-grid">
-          {jobs.map((j) => {
-            const count = (j.candidates as unknown as { count: number }[])[0]?.count ?? 0;
-            const live = j.google_form_id || j.sheet_id;
-            return (
-              <Link key={j.id} href={`/jobs/${j.id}`} className="job-card">
-                <h3>{j.title}</h3>
-                <div className="meta">
-                  {j.location && <span>{j.location}</span>}
-                  <span className="mono">{count} applicant{count === 1 ? "" : "s"}</span>
-                </div>
-                <div className="meta">
-                  <span>Created {fmt(j.created_at)}</span>
-                  {j.closed_at && <span>· Closed {fmt(j.closed_at)}</span>}
-                </div>
-                {j.based_on_job_id && titleOf.get(j.based_on_job_id) && (
-                  <div className="meta"><span>Based on {titleOf.get(j.based_on_job_id)}</span></div>
-                )}
-                <div className="row" style={{ gap: 6 }}>
-                  {j.status === "closed" ? (
-                    <span className="chip neutral">Closed</span>
-                  ) : (
-                    <>
-                      <span className={`chip ${live ? "good" : "neutral"}`}>{live ? "Form live" : "No form yet"}</span>
-                      <span className={`chip ${j.current_rubric_id ? "good" : "warn"}`}>{j.current_rubric_id ? "Rubric approved" : "Rubric needed"}</span>
-                    </>
-                  )}
-                </div>
-              </Link>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="empty-state">
-          <h3>{q ? "No jobs match that search" : view === "closed" ? "No closed jobs yet" : "No open jobs"}</h3>
-          <p>{view === "closed" ? "Close a job from its page once hiring is done — it moves here with its full history." : "Create one above to start collecting applications."}</p>
-        </div>
-      )}
-    </>
+    <JobsView
+      view={view}
+      jobs={jobs.map((j) => ({
+        id: j.id, title: j.title, location: j.location, status: j.status, created_at: j.created_at, closed_at: j.closed_at,
+        google_form_id: j.google_form_id, sheet_id: j.sheet_id, current_rubric_id: j.current_rubric_id,
+        last_synced_at: j.last_synced_at, last_sync_error: j.last_sync_error,
+        basedOn: (j.based_on_job_id && titleOf.get(j.based_on_job_id)) || null,
+        stats: statOf(j.id),
+      }))}
+      totals={{ review: sum("review"), waiting: sum("waiting"), stage2: sum("stage2"), interviews: interviewsSoon }}
+      openCount={openJobs.length}
+      closedCount={closedCount}
+      totalJobs={allJobs.length}
+      options={options}
+      locations={locations}
+      showMore={inView.length >= FILTERS_FROM}
+      firstName={firstName}
+      q={q}
+      loc={loc}
+      from={from}
+      deleted={Boolean(sp.deleted)}
+    />
   );
 }

@@ -42,8 +42,7 @@ export function NewJobForm({ jobs, initialSource }: { jobs: JobOption[]; initial
   );
 
   return (
-    <form action={createJob} className="panel" style={{ marginBottom: 28, display: "grid", gap: 16 }}>
-      <h3>Create a new job</h3>
+    <form action={createJob} style={{ display: "grid", gap: 16 }}>
       <div className="row" style={{ alignItems: "flex-end" }}>
         <div style={{ flex: "2 1 240px" }}>
           <label className="f" htmlFor="title">Job title</label>

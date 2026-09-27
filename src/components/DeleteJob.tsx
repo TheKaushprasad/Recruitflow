@@ -12,7 +12,7 @@ export function DeleteJob({ jobId, title, candidates }: { jobId: string; title: 
   const [typed, setTyped] = useState("");
 
   return (
-    <div className="panel danger" style={{ marginTop: 32 }}>
+    <div className="panel danger" id="delete" style={{ marginTop: 32, scrollMarginTop: 24 }}>
       <h3 style={{ marginBottom: 6 }}>Delete this job</h3>
       <p className="hint" style={{ margin: "0 0 14px" }}>
         Permanently removes the job, its {candidates} candidate{candidates === 1 ? "" : "s"}, every score and rubric version, the pipeline and interview records.
