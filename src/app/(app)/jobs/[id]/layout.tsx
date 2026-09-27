@@ -8,7 +8,7 @@ import { requireUser } from "@/lib/supabase/server";
 import { getJob } from "@/lib/data";
 import { budgetFor } from "@/lib/budget";
 import { JobTabs } from "@/components/JobTabs";
-import { JobStatusButton } from "@/components/JobStatusButton";
+import { JobHeaderActions } from "@/components/JobHeaderActions";
 
 export default async function JobLayout({ children, params }: LayoutProps<"/jobs/[id]">) {
   const { id } = await params;
@@ -35,14 +35,13 @@ export default async function JobLayout({ children, params }: LayoutProps<"/jobs
   return (
     <>
       <div className="row" style={{ gap: 10, marginBottom: 4 }}>
-        <Link href={job.status === "closed" ? "/jobs?view=closed" : "/jobs"} className="muted" style={{ fontSize: 13 }}>Jobs</Link>
+        <Link href={job.status === "closed" ? "/jobs?view=closed" : "/jobs"} className="crumb">Jobs</Link>
         <span className="muted" style={{ fontSize: 13 }}>/</span>
         <b>{job.title}</b>
         {job.location && <span className="mono muted" style={{ fontSize: 13 }}>· {job.location}</span>}
         {job.status === "closed" && <span className="chip neutral">Closed</span>}
         <span className="spacer" />
-        <Link className="pillbtn btn-ghost btn-sm" href={`/jobs?from=${id}`} style={{ textDecoration: "none" }}>Create similar job</Link>
-        <JobStatusButton jobId={id} status={job.status} />
+        <JobHeaderActions jobId={id} status={job.status} />
       </div>
       {job.status === "closed" && (
         <div className="banner" style={{ margin: "12px 0 0" }}>

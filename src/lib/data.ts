@@ -23,6 +23,8 @@ export type CandidateRow = Candidate & {
   /** true when the shown evaluation used an older rubric version */
   stale: boolean;
   rank: number | null;
+  /** Another qualified candidate has the same stage-1 score (shown as "1="). */
+  tied: boolean;
   /** Latest stage-2 deep evaluation, if one was run */
   deep: DeepEvaluation | null;
   /** true when that deep evaluation used an older rubric version */
@@ -103,6 +105,7 @@ export async function getCandidates(db: SupabaseClient, job: Job): Promise<Candi
       evaluation,
       stale: !current && !!evaluation,
       rank: null as number | null,
+      tied: false,
       deep,
       deepStale: !!deep && deep.rubric_id !== job.current_rubric_id,
       inStage2: !!c.stage2_at,
@@ -118,9 +121,13 @@ export async function getCandidates(db: SupabaseClient, job: Job): Promise<Candi
       Number(eb.confidence) - Number(ea.confidence)
     );
   });
-  let r = 0;
-  rows.forEach((c) => {
-    if (c.evaluation && !c.evaluation.disqualified) c.rank = ++r;
+  // Standard competition ranking on the stage-1 score: equal scores share a rank (1, 1, 3).
+  const ranked = rows.filter((c) => c.evaluation && !c.evaluation.disqualified && !c.stale);
+  const scores = ranked.map((c) => c.evaluation!.score);
+  ranked.forEach((c) => {
+    const s = c.evaluation!.score;
+    c.rank = 1 + scores.filter((x) => x > s).length;
+    c.tied = scores.filter((x) => x === s).length > 1;
   });
   return rows;
 }

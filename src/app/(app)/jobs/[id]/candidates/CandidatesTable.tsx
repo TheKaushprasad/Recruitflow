@@ -6,13 +6,15 @@ import { useMemo, useState } from "react";
 import { useAction } from "@/components/Toast";
 import { CandidateDrawer } from "@/components/CandidateDrawer";
 import { VERDICT, deepRunning } from "@/components/DeepPanel";
-import { moveToStage2, startDeepEvaluation } from "@/app/actions/deep";
+import { Icon } from "@/components/Icon";
+import { Menu, type MenuItem } from "@/components/Menu";
 import { SendEmailModal } from "@/components/SendEmailModal";
-import { SyncButton } from "@/components/SyncButton";
+import { SyncStatus } from "@/components/SyncStatus";
 import { useLiveRefresh } from "@/components/useLiveRefresh";
+import { moveToStage2, startDeepEvaluation } from "@/app/actions/deep";
 import { moveCandidates, exportResults } from "@/app/actions/pipeline";
 import { retryScoring } from "@/app/actions/rubric";
-import { confLevel } from "@/lib/format";
+import { confLevel, timeAgo } from "@/lib/format";
 import type { CandidateRow } from "@/lib/data";
 import type { Criterion, EmailTemplate, Job, Stage } from "@/lib/types";
 
@@ -27,6 +29,16 @@ const FILTERS = [
   ["pending", "Not scored"],
   ["error", "Failed"],
 ] as const;
+
+type SortKey = "default" | "name" | "stage1" | "confidence" | "stage2";
+const PAGE_SIZE = 25;
+/** Stage 2 can take this many at once (reviews run from a queue). */
+const STAGE2_MAX = 100;
+
+const appliedAt = (c: CandidateRow) => c.submitted_at ?? c.created_at;
+const initials = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((s) => s[0]!.toUpperCase()).join("") || "?";
+const AVATAR_TONES = ["mint", "peach", "lime", "sky", "lilac"];
+const tone = (id: string) => AVATAR_TONES[[...id].reduce((a, ch) => a + ch.charCodeAt(0), 0) % AVATAR_TONES.length];
 
 export function CandidatesTable(props: {
   job: Job;
@@ -47,6 +59,8 @@ export function CandidatesTable(props: {
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [open, setOpen] = useState<string | null>(props.openId);
   const [mailTo, setMailTo] = useState<string[] | null>(null);
+  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "default", dir: "desc" });
+  const [page, setPage] = useState(0);
   const threshold = Number(job.recheck_threshold);
   const critById = useMemo(() => new Map(props.criteria.map((c) => [c.id, c])), [props.criteria]);
 
@@ -56,10 +70,10 @@ export function CandidatesTable(props: {
     // Filters = single-answer checks; Answers = open-ended answers graded against an expected answer (or older criteria).
     const graded = (x: (typeof rs)[number]) => x.c!.kind === "soft" || (x.c!.kind === "rule" && x.c!.rule?.op === "ai_expected");
     const filters = rs.filter((x) => x.c!.kind === "rule" && !graded(x));
-    const open = rs.filter(graded);
-    const w = open.reduce((a, x) => a + (x.c!.weight || 1), 0);
+    const openEnded = rs.filter(graded);
+    const w = openEnded.reduce((a, x) => a + (x.c!.weight || 1), 0);
     const val: Record<string, number> = { meets: 1, borderline: 0.5, not_met: 0 };
-    const answers = w ? Math.round((open.reduce((a, x) => a + (x.c!.weight || 1) * (val[x.r.decision] ?? 0), 0) / w) * 100) : null;
+    const answers = w ? Math.round((openEnded.reduce((a, x) => a + (x.c!.weight || 1) * (val[x.r.decision] ?? 0), 0) / w) * 100) : null;
     const review = rs
       .filter(({ r, c }) =>
         r.decision === "unclear" ||
@@ -88,35 +102,55 @@ export function CandidatesTable(props: {
       default: return true;
     }
   };
-  const [sortBy, setSortBy] = useState<"stage1" | "deep">("stage1");
+
+  const stage1Score = (c: CandidateRow) => (!c.evaluation ? -2 : c.evaluation.disqualified ? -1 : c.evaluation.score);
+  const stage2Score = (c: CandidateRow) =>
+    c.deep?.status === "done" && !c.deepStale ? (c.deep.disqualified ? -1 : c.deep.score ?? -1) : -2;
+
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
     const list = candidates.filter(
       (c) => match(c, filter) && (!needle || `${c.name} ${c.email ?? ""} ${c.answers.map((a) => a.answer).join(" ")}`.toLowerCase().includes(needle)),
     );
-    if (sortBy === "deep") {
-      const deepScore = (c: CandidateRow) =>
-        c.deep?.status === "done" && !c.deepStale ? (c.deep.disqualified ? -1 : c.deep.score ?? -1) : -2;
-      return [...list].sort((a, b) => deepScore(b) - deepScore(a)); // stable: ties keep stage-1 order
-    }
-    return list;
-  }, [candidates, q, filter, sortBy]);
+    const d = sort.dir === "asc" ? 1 : -1;
+    const byNewest = (a: CandidateRow, b: CandidateRow) => appliedAt(b).localeCompare(appliedAt(a));
+    return [...list].sort((a, b) => {
+      switch (sort.key) {
+        case "name": return d * a.name.localeCompare(b.name);
+        case "stage1": return d * (stage1Score(a) - stage1Score(b)) || byNewest(a, b);
+        case "confidence": return d * (Number(a.evaluation?.confidence ?? -1) - Number(b.evaluation?.confidence ?? -1)) || byNewest(a, b);
+        case "stage2": return d * (stage2Score(a) - stage2Score(b)) || stage1Score(b) - stage1Score(a);
+        default:
+          // Everyone moved to stage 2 first (best CV review on top), then the newest applications.
+          if (a.inStage2 !== b.inStage2) return a.inStage2 ? -1 : 1;
+          if (a.inStage2) return stage2Score(b) - stage2Score(a) || stage1Score(b) - stage1Score(a);
+          return byNewest(a, b);
+      }
+    });
+  }, [candidates, q, filter, sort]);
+
+  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  const current = Math.min(page, pages - 1);
+  const shown = rows.slice(current * PAGE_SIZE, current * PAGE_SIZE + PAGE_SIZE);
 
   // Live updates: new responses, stage-1 scores and CV reviews appear without a reload.
   const anyScoring = candidates.some((c) => c.score_status === "scoring");
   const anyRunning = candidates.some((c) => deepRunning(c.deep));
   useLiveRefresh(job.id, anyScoring || anyRunning);
 
-  /** Move to stage 2 (which starts the CV review), or re-run the review for people already there. */
-  const toStage2 = async (ids: string[]) => {
-    const r = await run(() => moveToStage2(job.id, ids));
-    if (r.ok) { setSel(new Set()); router.refresh(); }
+  const done = () => { setSel(new Set()); router.refresh(); };
+  const toStage2 = async (ids: string[]) => { const r = await run(() => moveToStage2(job.id, ids)); if (r.ok) done(); };
+  const reEvaluate = async (ids: string[]) => { const r = await run(() => startDeepEvaluation(job.id, ids)); if (r.ok) router.refresh(); };
+  const toPipeline = async (ids: string[]) => {
+    const ok = ids.filter((id) => { const c = candidates.find((x) => x.id === id); return c && !c.stage_id && !c.evaluation?.disqualified; });
+    if (!ok.length) { await run(async () => ({ ok: false, error: "Those candidates are already in the pipeline or disqualified." })); return; }
+    const r = await run(() => moveCandidates(job.id, ok, stages[0].id).then((x) => (x.ok ? { ok: true, message: `${ok.length} added to ${stages[0].name}` } : x)));
+    if (r.ok) done();
   };
-  const reEvaluate = async (ids: string[]) => {
-    const r = await run(() => startDeepEvaluation(job.id, ids));
-    if (r.ok) router.refresh();
-  };
-  const counts = useMemo(() => Object.fromEntries(FILTERS.map(([k]) => [k, candidates.filter((c) => match(c, k)).length])), [candidates]);
+  const retry = async (ids: string[]) => { const r = await run(() => retryScoring(ids)); if (r.ok) done(); };
+
+  const counts = useMemo(() => Object.fromEntries(FILTERS.map(([k]) => [k, candidates.filter((c) => match(c, k)).length])),
+    [candidates]);
 
   const toggle = (id: string, on: boolean) => {
     const s = new Set(sel);
@@ -129,21 +163,69 @@ export function CandidatesTable(props: {
     if (id) url.searchParams.set("c", id); else url.searchParams.delete("c");
     window.history.replaceState(null, "", url);
   };
+  const sortBy = (key: SortKey) => {
+    setPage(0);
+    setSort((s) => (s.key === key ? { key, dir: s.dir === "desc" ? "asc" : "desc" } : { key, dir: key === "name" ? "asc" : "desc" }));
+  };
   const stageName = (id: string | null) => stages.find((s) => s.id === id)?.name;
   const opened = candidates.find((c) => c.id === open) ?? null;
   const staleCount = candidates.filter((c) => c.stale).length;
+  const selected = candidates.filter((c) => sel.has(c.id));
+  const selErrored = selected.filter((c) => c.score_status === "error").map((c) => c.id);
+  const selMovable = selected.filter((c) => !c.inStage2 && c.evaluation && !c.evaluation.disqualified).map((c) => c.id);
+
+  const exportCsv = () => {
+    const cell = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const head = ["Rank", "Name", "Email", "Applied", "Stage 1 score", "Confidence", "Needs review", "Why (stage 1)", "Stage 2 score", "Stage 2 verdict", "Why (stage 2)", "Pipeline stage"];
+    const lines = rows.map((c) => {
+      const e = c.evaluation;
+      return [
+        c.rank ?? "", c.name, c.email ?? "", appliedAt(c).slice(0, 10),
+        e ? (e.disqualified ? "Rejected by filter" : e.score) : "", e ? Number(e.confidence).toFixed(2) : "", e?.needs_review ? "yes" : "",
+        e?.reason ?? "", c.deep?.status === "done" ? c.deep.score : "", c.deep?.status === "done" ? VERDICT[c.deep.verdict ?? ""]?.[0] ?? "" : "",
+        c.deep?.status === "done" ? c.deep.summary : "", stageName(c.stage_id) ?? "",
+      ].map(cell).join(",");
+    });
+    const blob = new Blob(["﻿" + [head.map(cell).join(","), ...lines].join("\r\n")], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${job.title.replace(/[^\w-]+/g, "-")}-candidates.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  const th = (k: SortKey, children: React.ReactNode, className?: string) => (
+    <th key={k} className={className} aria-sort={sort.key === k ? (sort.dir === "asc" ? "ascending" : "descending") : undefined}>
+      <button className="th-sort" onClick={() => sortBy(k)}>
+        {children}<span className="sort-ind" aria-hidden="true">{sort.key === k ? (sort.dir === "asc" ? "↑" : "↓") : "↕"}</span>
+      </button>
+    </th>
+  );
 
   return (
     <>
-      <div className="section-head">
+      <div className="cand-head">
         <div>
-          <p className="eyebrow" style={{ margin: "0 0 8px" }}>Ranked shortlist{props.currentVersion ? ` · rubric v${props.currentVersion}` : ""}</p>
-          <h2>{candidates.length} candidate{candidates.length === 1 ? "" : "s"}, ranked by suitability</h2>
-          <p>Disqualified candidates sit below the line with the reason shown. Click anyone to see the evidence behind every criterion.</p>
+          <div className="row" style={{ gap: 10 }}>
+            <h2 style={{ margin: 0 }}>Candidates <span className="muted" style={{ fontWeight: 500 }}>({candidates.length})</span></h2>
+            {props.currentVersion && <span className="chip neutral" title="Scores use this rubric version">Rubric v{props.currentVersion}</span>}
+          </div>
+          <p className="page-sub" style={{ marginTop: 6 }}>Stage 2 candidates first, then the newest applications. Click anyone to see the full evaluation.</p>
         </div>
-        <div className="row">
-          {job.status === "open" && <SyncButton jobId={job.id} />}
-          <button className="pillbtn btn-ghost btn-sm" disabled={pending} onClick={() => run(() => exportResults(job.id))}>Export to Sheet</button>
+        <div className="row" style={{ gap: 8 }}>
+          {job.status === "open" && (job.google_form_id || job.sheet_id) && (
+            <SyncStatus jobId={job.id} lastSyncedAt={job.last_synced_at} error={job.last_sync_error} />
+          )}
+          <Menu
+            label="Export"
+            className="pillbtn btn-ghost btn-sm btn-icon"
+            busy={pending}
+            trigger={<>Export <span aria-hidden="true">▾</span></>}
+            items={[
+              { label: "To a Google Sheet tab", onSelect: () => run(() => exportResults(job.id)) },
+              { label: `Download CSV (${rows.length} shown)`, onSelect: exportCsv },
+            ]}
+          />
         </div>
       </div>
 
@@ -154,158 +236,210 @@ export function CandidatesTable(props: {
         <div className="banner"><div className="txt"><b>{staleCount} candidate{staleCount === 1 ? " is" : "s are"} still being re-scored on rubric v{props.currentVersion}.</b> Their older scores are shown faded.</div></div>
       )}
 
-      <div className="toolbar">
-        <input type="search" id="search" placeholder="Search name, email or answers" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search candidates" />
+      <div className="cand-toolbar">
+        <label className="searchbox">
+          <Icon name="search" size={16} />
+          <input type="search" value={q} onChange={(e) => { setQ(e.target.value); setPage(0); }} placeholder="Search name, email or answers" aria-label="Search candidates" />
+        </label>
         <div className="filters">
           {FILTERS.filter(([k]) => k === "all" || counts[k] > 0 || filter === k).map(([k, l]) => (
-            <button key={k} aria-pressed={filter === k} onClick={() => setFilter(k)}>{l} <span className="mono">{counts[k]}</span></button>
+            <button key={k} aria-pressed={filter === k} onClick={() => { setFilter(k); setPage(0); }}>{l} <span className="mono">{counts[k]}</span></button>
           ))}
         </div>
-        <select id="sortBy" aria-label="Sort by" value={sortBy} onChange={(e) => setSortBy(e.target.value as "stage1" | "deep")} style={{ width: "auto", padding: "7px 10px", fontSize: 13, borderRadius: 99 }}>
-          <option value="stage1">Sort: stage 1 score</option>
-          <option value="deep">Sort: stage 2 score</option>
-        </select>
-        <div className="bulk">
-          {sel.size ? (
-            <>
-              <span className="mono">{sel.size} selected</span>
-              {filter === "error" ? (
-                <button className="pillbtn btn-ghost btn-sm" disabled={pending} onClick={async () => { await run(() => retryScoring([...sel])); setSel(new Set()); router.refresh(); }}>Retry scoring</button>
-              ) : (
-                <button className="pillbtn btn-ghost btn-sm" disabled={pending || !stages.length} onClick={async () => {
-                  const ids = [...sel].filter((id) => { const c = candidates.find((x) => x.id === id); return c && !c.stage_id && !c.evaluation?.disqualified; });
-                  if (!ids.length) { run(async () => ({ ok: false, error: "Those candidates are already in the pipeline or disqualified." })); return; }
-                  await run(() => moveCandidates(job.id, ids, stages[0].id).then((r) => (r.ok ? { ok: true, message: `${ids.length} added to ${stages[0].name}` } : r)));
-                  setSel(new Set()); router.refresh();
-                }}>Add to pipeline</button>
-              )}
-              <button className="pillbtn btn-lime btn-sm" disabled={pending || !props.currentVersion || sel.size > 10}
-                title={sel.size > 10 ? "Move up to 10 at a time — each one is reviewed right away" : "Moves them to stage 2 and starts the CV, portfolio and GitHub review"}
-                onClick={() => toStage2([...sel])}>Move {sel.size} to stage 2</button>
-              <button className="pillbtn btn-dark btn-sm" onClick={() => setMailTo([...sel])}>Email {sel.size}</button>
-            </>
-          ) : (
-            <span className="muted">Select candidates to evaluate, email or add to the pipeline</span>
-          )}
-        </div>
+        {sort.key !== "default" && (
+          <button className="btn-link" style={{ fontSize: 13, marginLeft: "auto" }} onClick={() => { setSort({ key: "default", dir: "desc" }); setPage(0); }}>
+            Reset order
+          </button>
+        )}
       </div>
 
-      <div className="tablewrap">
-        <table className="cand-table">
+      <div className="cand-card">
+        <table className="ctable">
+          <colgroup>
+            <col className="w-sel" /><col className="w-rank" /><col className="w-who" /><col className="w-s1" /><col className="w-conf" />
+            <col className="w-why" /><col className="w-s2" /><col className="w-why" /><col className="w-act" />
+          </colgroup>
           <thead>
             <tr>
-              <th><input type="checkbox" aria-label="Select all shown" checked={rows.length > 0 && rows.every((c) => sel.has(c.id))}
-                onChange={(e) => { const s = new Set(sel); rows.forEach((c) => (e.target.checked ? s.add(c.id) : s.delete(c.id))); setSel(s); }} /></th>
-              <th>#</th><th>Candidate</th><th>Stage 1 score</th><th>Confidence</th><th>Why they ranked here</th>
-              <th className="stage2-start">Stage 2 · CV review</th><th>Why they ranked here</th><th>Pipeline</th>
+              <th className="c-sel"><input type="checkbox" aria-label="Select all on this page" checked={shown.length > 0 && shown.every((c) => sel.has(c.id))}
+                onChange={(e) => { const s = new Set(sel); shown.forEach((c) => (e.target.checked ? s.add(c.id) : s.delete(c.id))); setSel(s); }} /></th>
+              <th className="c-rank" title="Rank by stage 1 score (= means tied)">#</th>
+              {th("name", "Candidate")}
+              {th("stage1", "Stage 1")}
+              {th("confidence", "Confidence")}
+              <th>Why (stage 1)</th>
+              {th("stage2", "Stage 2", "stage2-start")}
+              <th>Why (stage 2)</th>
+              <th className="c-act"><span className="sr-only">Actions</span></th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((c) => {
+            {shown.map((c) => {
               const e = c.evaluation;
               const b = e ? breakdown(e) : null;
               const [cl, ck] = e && b?.aiJudged ? confLevel(Number(e.confidence), threshold) : ["", "neutral"];
               const rechecked = e?.criterion_results.filter((r) => r.initial_confidence != null).length ?? 0;
+              const hasLinks = !!(c.resume_url || c.portfolio_url || c.github_url);
+              const actions: MenuItem[] = [
+                { label: "View details", onSelect: () => openCandidate(c.id) },
+                ...(!c.inStage2 && e && !e.disqualified ? [{ label: "Move to stage 2", onSelect: () => toStage2([c.id]), disabled: pending || !props.currentVersion }] : []),
+                ...(c.inStage2 && hasLinks && !deepRunning(c.deep) ? [{ label: c.deep?.status === "done" ? "Review CV again" : "Review CV", onSelect: () => reEvaluate([c.id]) }] : []),
+                ...(!c.stage_id && !e?.disqualified && stages.length ? [{ label: `Add to ${stages[0].name}`, onSelect: () => toPipeline([c.id]) }] : []),
+                ...(c.email ? [{ label: "Email", onSelect: () => setMailTo([c.id]) }] : []),
+                ...(c.score_status === "error" ? [{ label: "Retry scoring", onSelect: () => retry([c.id]) }] : []),
+              ];
               return (
-                <tr key={c.id} className={`${e?.disqualified ? "dq" : ""} ${c.stale ? "stale" : ""}`} onClick={(ev) => { if (!(ev.target as HTMLElement).closest("input")) openCandidate(c.id); }}>
-                  <td><input type="checkbox" checked={sel.has(c.id)} onChange={(ev) => toggle(c.id, ev.target.checked)} aria-label={`Select ${c.name}`} /></td>
-                  <td className="rank">{c.rank ?? "—"}</td>
-                  <td className="who"><b>{c.name}</b><span>{c.email ?? "no email"}</span></td>
-                  <td>{!e ? <span className="muted">—</span> : e.disqualified ? (
-                    <span className="chip bad" title={e.reason}>✕ Rejected by filter</span>
-                  ) : (
-                    <div style={{ display: "grid", gap: 4 }}>
-                      <div className="scorecell"><span className="n">{e.score}</span><span className="bar"><i style={{ width: `${e.score}%` }} /></span></div>
-                      <span className="hint mono" style={{ margin: 0, fontSize: 12 }}>
-                        {b!.filters.total > 0 && <>Filters {b!.filters.passed}/{b!.filters.total} ✓</>}
-                        {b!.filters.total > 0 && b!.answers != null && " · "}
-                        {b!.answers != null && <>Answers {b!.answers}/100</>}
+                <tr key={c.id} className={`${e?.disqualified ? "dq" : ""} ${c.stale ? "stale" : ""} ${sel.has(c.id) ? "is-sel" : ""}`}
+                  onClick={(ev) => { if (!(ev.target as HTMLElement).closest("input,button,a")) openCandidate(c.id); }}>
+                  <td className="c-sel"><input type="checkbox" checked={sel.has(c.id)} onChange={(ev) => toggle(c.id, ev.target.checked)} aria-label={`Select ${c.name}`} /></td>
+                  <td className="c-rank mono">{c.rank ? `${c.rank}${c.tied ? "=" : ""}` : "—"}</td>
+                  <td className="c-who"><div className="who-cell">
+                    <span className={`avatar ${tone(c.id)}`} aria-hidden="true">{initials(c.name)}</span>
+                    <div className="who-txt">
+                      <b title={c.name}>{c.name}</b>
+                      <span title={c.email ?? undefined}>{c.email ?? "no email"}</span>
+                      <span className="applied" suppressHydrationWarning>
+                        Applied {timeAgo(appliedAt(c))}
+                        {c.stage_id && !e?.disqualified && <> · <span className="chip good mini">{stageName(c.stage_id)}</span></>}
                       </span>
                     </div>
-                  )}</td>
-                  <td>{!e ? null : (
-                    <div style={{ display: "grid", gap: 4, justifyItems: "start" }}>
-                      {b!.aiJudged
-                        ? <span className={`chip ${ck}`} title="Average confidence of the AI's judgements">{cl} <span className="mono">{Number(e.confidence).toFixed(2)}</span></span>
-                        : <span className="muted" title="No AI judgement — decided by exact filters only">—</span>}
-                      {e.needs_review && !e.disqualified && (
-                        <span className="chip warn" title={b!.review.join("; ")}>Needs review{b!.review.length ? `: ${b!.review[0]}${b!.review.length > 1 ? ` +${b!.review.length - 1}` : ""}` : ""}</span>
-                      )}
-                      {rechecked > 0 && <span className="hint" style={{ margin: 0 }}>↻ {rechecked} rechecked by {providerLabel(e.criterion_results.find((r) => r.initial_confidence != null)?.scored_by)}</span>}
-                    </div>
-                  )}</td>
-                  <td className="reason">
-                    {c.score_status === "error" ? <span className="error-text">Scoring failed: {c.score_error}</span>
-                      : !e ? <span title={c.score_error ?? undefined}>{c.score_status === "scoring" ? "Scoring now…" : c.score_error ? "Hit a temporary error — retrying automatically" : props.currentVersion ? "Waiting to be scored" : "Waiting for an approved rubric"}</span>
-                      : e.disqualified ? <><b>Disqualified.</b> {e.reason}</>
-                      : e.reason}
-                  </td>
-                  <td className="stage2-start" onClick={(ev) => ev.stopPropagation()}>
-                    {!c.inStage2 ? (
-                      e?.disqualified ? <span className="muted">—</span> : (
-                        <button className="pillbtn btn-lime btn-sm" disabled={pending || !props.currentVersion || !e}
-                          title={!e ? "Waiting for the stage-1 result" : "Move to stage 2 and review their CV, portfolio and GitHub"}
-                          onClick={() => toStage2([c.id])}>
-                          Move to stage 2
-                        </button>
-                      )
-                    ) : c.deep && deepRunning(c.deep) ? (
-                      <span className="chip neutral"><span className="spin" /> Reviewing CV</span>
-                    ) : c.deep?.status === "done" ? (
-                      <div style={{ display: "grid", gap: 4, opacity: c.deepStale ? 0.6 : 1 }}>
-                        <span className="row" style={{ gap: 6, flexWrap: "nowrap" }}>
-                          <b className="mono">{c.deep.score}</b>
-                          <span className={`chip ${c.deep.disqualified ? "bad" : VERDICT[c.deep.verdict ?? ""]?.[1] ?? "neutral"}`}>
-                            {c.deep.disqualified ? "Hard filter" : VERDICT[c.deep.verdict ?? ""]?.[0] ?? "Done"}
-                          </span>
-                        </span>
-                        {c.deepStale && <span className="hint" style={{ margin: 0 }}>older rubric</span>}
-                      </div>
-                    ) : !(c.resume_url || c.portfolio_url || c.github_url) ? (
-                      <button className="btn-link" style={{ fontSize: 13 }} onClick={() => openCandidate(c.id)}>In stage 2 · add a CV link</button>
+                  </div></td>
+                  <td className="c-s1" data-label="Stage 1">
+                    {!e ? <span className="muted">—</span> : e.disqualified ? (
+                      <span className="chip bad" title={e.reason}>✕ Rejected by filter</span>
                     ) : (
-                      <div style={{ display: "grid", gap: 4, justifyItems: "start" }}>
-                        <button className="pillbtn btn-ghost btn-sm" disabled={pending} onClick={() => reEvaluate([c.id])}>
-                          {c.deep?.status === "error" ? "Retry review" : "Review CV"}
-                        </button>
-                        {c.deep?.status === "error" && <span className="error-text" style={{ fontSize: 12 }}>Last run failed</span>}
+                      <div className="s1">
+                        <span className="s1-n"><b className="mono">{e.score}</b><span className="muted"> / 100</span></span>
+                        <span className="bar"><i style={{ width: `${e.score}%` }} /></span>
+                        <span className="s1-break mono">
+                          {b!.filters.total > 0 && <>Filters {b!.filters.passed}/{b!.filters.total}</>}
+                          {b!.filters.total > 0 && b!.answers != null && " · "}
+                          {b!.answers != null && <>Answers {b!.answers}</>}
+                        </span>
                       </div>
                     )}
                   </td>
-                  <td className="reason" style={{ opacity: c.deepStale ? 0.6 : 1 }}>
-                    {!c.inStage2 ? <span className="muted">—</span>
-                      : c.deep && deepRunning(c.deep) ? <span>Reading their CV, portfolio and GitHub…</span>
-                      : c.deep?.status === "error" ? <span className="error-text">Review failed: {c.deep.error}</span>
-                      : c.deep?.status === "done" ? (
-                        <>
-                          {c.deep.disqualified && <b>Fails a must-have. </b>}
-                          {c.deep.summary}
-                          {c.deepStale && <span className="hint" style={{ margin: "4px 0 0", display: "block" }}>Reviewed on an older rubric — review again for the current one.</span>}
-                        </>
-                      )
-                      : !(c.resume_url || c.portfolio_url || c.github_url) ? <span>No CV, portfolio or GitHub link yet.</span>
-                      : <span>Not reviewed yet.</span>}
+                  <td className="c-conf" data-label="Confidence">
+                    {!e ? null : (
+                      <div className="conf">
+                        {b!.aiJudged
+                          ? <span className={`chip ${ck}`} title="Average confidence of the AI's judgements">{cl} <span className="mono">{Number(e.confidence).toFixed(2)}</span></span>
+                          : <span className="muted" title="No AI judgement — decided by exact filters only">—</span>}
+                        <span className="conf-icons">
+                          {e.needs_review && !e.disqualified && (
+                            <span className="flag warn" title={`Needs review: ${b!.review.join("; ") || "low confidence"}`} aria-label="Needs review">
+                              <Icon name="alert" size={14} />{b!.review.length > 0 && <span className="mono">{b!.review.length}</span>}
+                            </span>
+                          )}
+                          {rechecked > 0 && (
+                            <span className="flag" title={`${rechecked} item${rechecked === 1 ? "" : "s"} rechecked by ${providerLabel(e.criterion_results.find((r) => r.initial_confidence != null)?.scored_by)}`} aria-label="Rechecked">
+                              <Icon name="refresh" size={13} /><span className="mono">{rechecked}</span>
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    )}
                   </td>
-                  <td>
-                    {e?.disqualified ? <span className="chip bad">✕ Filter</span>
-                      : c.stage_id ? <span className="chip good">{stageName(c.stage_id)}</span>
-                      : <span className="chip neutral">Not in pipeline</span>}
+                  <td className="c-why" data-label="Why (stage 1)">
+                    <p className="clamp">
+                      {c.score_status === "error" ? <span className="error-text">Scoring failed: {c.score_error}</span>
+                        : !e ? <span className="muted" title={c.score_error ?? undefined}>{c.score_status === "scoring" ? "Scoring now…" : c.score_error ? "Hit a temporary error — retrying automatically" : props.currentVersion ? "Waiting to be scored" : "Waiting for an approved rubric"}</span>
+                        : e.disqualified ? <><b className="bad-text">Disqualified.</b> {e.reason}</>
+                        : e.reason}
+                    </p>
+                  </td>
+                  <td className="c-s2 stage2-start" data-label="Stage 2">
+                    {!c.inStage2 ? (
+                      e && !e.disqualified ? (
+                        <button className="pillbtn btn-lime btn-xs" disabled={pending || !props.currentVersion}
+                          title="Move to stage 2 and review their CV, portfolio and GitHub" onClick={() => toStage2([c.id])}>
+                          Move to stage 2
+                        </button>
+                      ) : <span className="muted">—</span>
+                    ) : c.deep && deepRunning(c.deep) ? (
+                      <span className="chip neutral"><span className="spin" /> {c.deep.status === "running" ? "Reviewing" : "Queued"}</span>
+                    ) : c.deep?.status === "done" ? (
+                      <div className="s2" style={{ opacity: c.deepStale ? 0.6 : 1 }}>
+                        <span><b className="mono">{c.deep.score}</b><span className="muted"> / 100</span></span>
+                        <span className={`chip ${c.deep.disqualified ? "bad" : VERDICT[c.deep.verdict ?? ""]?.[1] ?? "neutral"}`}>
+                          {c.deep.disqualified ? "Hard filter" : VERDICT[c.deep.verdict ?? ""]?.[0] ?? "Done"}
+                        </span>
+                      </div>
+                    ) : !hasLinks ? (
+                      <button className="btn-link" style={{ fontSize: 13 }} onClick={() => openCandidate(c.id)}>Add a CV link</button>
+                    ) : (
+                      <button className="pillbtn btn-ghost btn-xs" disabled={pending} onClick={() => reEvaluate([c.id])}>
+                        {c.deep?.status === "error" ? "Retry review" : "Review CV"}
+                      </button>
+                    )}
+                  </td>
+                  <td className="c-why" data-label="Why (stage 2)" style={{ opacity: c.deepStale ? 0.6 : 1 }}>
+                    <p className="clamp">
+                      {!c.inStage2 ? <span className="muted">—</span>
+                        : c.deep && deepRunning(c.deep) ? <span className="muted">Reading their CV, portfolio and GitHub…</span>
+                        : c.deep?.status === "error" ? <span className="error-text">Review failed: {c.deep.error}</span>
+                        : c.deep?.status === "done" ? <>{c.deep.disqualified && <b className="bad-text">Fails a must-have. </b>}{c.deep.summary}</>
+                        : !hasLinks ? <span className="muted">No CV, portfolio or GitHub link yet.</span>
+                        : <span className="muted">Not reviewed yet.</span>}
+                    </p>
+                  </td>
+                  <td className="c-act">
+                    <Menu label={`Actions for ${c.name}`} trigger={<Icon name="more" />} items={actions} />
                   </td>
                 </tr>
               );
             })}
-            {!rows.length && (
-              <tr><td colSpan={9} className="muted" style={{ textAlign: "center", padding: 40 }}>
-                {candidates.length ? "No candidates match. Clear the search or pick another filter." : "No applications yet. Share your form link — responses appear here within a few minutes."}
+            {!shown.length && (
+              <tr className="empty-row"><td colSpan={9}>
+                {candidates.length ? "No candidates match. Clear the search or pick another filter." : "No applications yet. Share your form link — responses appear here within a couple of minutes."}
               </td></tr>
             )}
           </tbody>
         </table>
+
+        {rows.length > PAGE_SIZE && (
+          <div className="pager">
+            <span className="muted">Showing {current * PAGE_SIZE + 1}–{Math.min(rows.length, (current + 1) * PAGE_SIZE)} of {rows.length}</span>
+            <div className="row" style={{ gap: 6 }}>
+              <button className="iconbtn" aria-label="Previous page" disabled={current === 0} onClick={() => setPage(current - 1)}>‹</button>
+              <span className="mono">{current + 1} / {pages}</span>
+              <button className="iconbtn" aria-label="Next page" disabled={current >= pages - 1} onClick={() => setPage(current + 1)}>›</button>
+            </div>
+          </div>
+        )}
+        {rows.length > 0 && rows.length <= PAGE_SIZE && (
+          <div className="pager"><span className="muted">Showing {rows.length} of {rows.length}</span></div>
+        )}
       </div>
-      <p className="hint">
-        Stage 1 screens everyone on their form answers: filters check single answers (exactly, or with an AI check for free text), and the score is the weighted share of criteria met (borderline counts half). Jev judges first and {props.aiName} rechecks anything under {threshold.toFixed(2)} confidence.
-        You decide who moves on: <b>Move to stage 2</b> starts {props.aiName}&apos;s review of their CV, portfolio and GitHub against the JD and the stage-2 rubric.
-      </p>
+
+      {sel.size > 0 && (
+        <div className="bulkbar" role="region" aria-label="Selected candidates">
+          <span className="mono"><b>{sel.size}</b> selected</span>
+          <button className="pillbtn btn-lime btn-sm" disabled={pending || !props.currentVersion || !selMovable.length || selMovable.length > STAGE2_MAX}
+            title={!selMovable.length ? "Pick scored, qualified candidates still in stage 1" : "Moves them to stage 2 and queues the CV, portfolio and GitHub review"}
+            onClick={() => toStage2(selMovable)}>
+            Move {selMovable.length || ""} to stage 2
+          </button>
+          <button className="pillbtn btn-ghost btn-sm" disabled={pending || !stages.length} onClick={() => toPipeline([...sel])}>Add to pipeline</button>
+          <button className="pillbtn btn-ghost btn-sm" onClick={() => setMailTo([...sel])}>Email</button>
+          {selErrored.length > 0 && <button className="pillbtn btn-ghost btn-sm" disabled={pending} onClick={() => retry(selErrored)}>Retry scoring</button>}
+          <button className="iconbtn" aria-label="Clear selection" onClick={() => setSel(new Set())}><Icon name="x" size={16} /></button>
+        </div>
+      )}
+
+      <details className="infobox">
+        <summary><Icon name="alert" size={15} /> How scores work</summary>
+        <p>
+          <b>Stage 1</b> screens everyone on their form answers. Exact filters (notice period, pay, options) are checked in code. Free-text
+          answers are judged by Jev first; anything Jev is less than {threshold.toFixed(2)} confident about goes to {props.aiName}, and
+          “Explain” in a candidate&apos;s panel writes the evidence for Jev&apos;s confident calls. The score is the weighted share of criteria
+          met (borderline counts half), and tied scores share a rank (“1=”).
+        </p>
+        <p>
+          <b>Stage 2</b> is your call: <b>Move to stage 2</b> queues {props.aiName}&apos;s review of their CV, portfolio and GitHub against
+          the job description and the stage-2 rubric.
+        </p>
+      </details>
 
       {opened && (
         <CandidateDrawer
@@ -324,7 +458,7 @@ export function CandidatesTable(props: {
           recipients={candidates.filter((c) => mailTo.includes(c.id))}
           stages={stages}
           jobTitle={job.title}
-          onClose={(sent) => { setMailTo(null); if (sent) { setSel(new Set()); router.refresh(); } }}
+          onClose={(sent) => { setMailTo(null); if (sent) done(); }}
         />
       )}
     </>
