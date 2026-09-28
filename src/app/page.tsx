@@ -263,7 +263,7 @@ function StepVisual({ i, ranked }: { i: number; ranked: { name: string; score: n
   }
   if (i === 2) {
     return (
-      <div className="lp-vis rank">
+      <div className="lp-vis ranklist">
         {ranked.map((r) => (
           <span key={r.name}><b>{r.name.split(" ")[0]}</b><span className="bar"><i style={{ width: `${r.score}%` }} /></span><em className="mono">{r.score}</em></span>
         ))}

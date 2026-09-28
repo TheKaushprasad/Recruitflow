@@ -692,14 +692,14 @@ th[aria-sort] .sort-ind{opacity:1;color:var(--green-ink)}
 .lp-vis{background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:12px;display:grid;gap:7px;min-height:104px;align-content:center}
 .lp-vis .ln{height:7px;border-radius:99px;background:var(--line)}
 .lp-vis .w90{width:90%} .lp-vis .w80{width:80%} .lp-vis .w70{width:70%}
-.lp-vis.rules span,.lp-vis.rank span{display:flex;align-items:center;gap:6px;font-size:11.5px}
-.lp-vis.rules b,.lp-vis.rank b{flex:1;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lp-vis.rules span,.lp-vis.ranklist span{display:flex;align-items:center;gap:6px;font-size:11.5px}
+.lp-vis.rules b,.lp-vis.ranklist b{flex:1;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lp-vis.rules em{font-style:normal}
 .lp-vis.rules i{font-style:normal;width:18px;height:18px;border-radius:50%;display:grid;place-items:center;font-size:10px;font-weight:700}
 .lp-vis i.ok{background:var(--good-soft);color:var(--good)} .lp-vis i.warn{background:var(--warn-soft);color:var(--warn)}
-.lp-vis.rank b{flex:0 0 52px}
-.lp-vis.rank .bar{flex:1;min-width:0;height:5px}
-.lp-vis.rank em{font-style:normal;width:24px;text-align:right}
+.lp-vis.ranklist b{flex:0 0 52px}
+.lp-vis.ranklist .bar{flex:1;min-width:0;height:5px}
+.lp-vis.ranklist em{font-style:normal;width:24px;text-align:right}
 .lp-vis.cols{grid-template-columns:repeat(3,1fr);align-items:stretch}
 .lp-vis.cols span{display:grid;gap:6px;align-content:start;background:var(--surface-2);border-radius:8px;padding:8px;font-size:10.5px}
 .lp-vis.cols i{display:block;height:18px;border-radius:6px;background:var(--surface);border:1px solid var(--line)}
