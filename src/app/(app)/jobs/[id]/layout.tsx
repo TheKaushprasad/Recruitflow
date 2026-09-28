@@ -9,17 +9,35 @@ import { getJob } from "@/lib/data";
 import { budgetFor } from "@/lib/budget";
 import { JobTabs } from "@/components/JobTabs";
 import { JobHeaderActions } from "@/components/JobHeaderActions";
+import { Icon } from "@/components/Icon";
 
 export default async function JobLayout({ children, params }: LayoutProps<"/jobs/[id]">) {
   const { id } = await params;
   const { supabase, user } = await requireUser();
   // Run the header queries in parallel rather than one after another.
-  const [job, { count }, { data: draft }, budget] = await Promise.all([
-    getJob(supabase, id),
+  const job = await getJob(supabase, id);
+  const [{ count }, { data: draft }, budget, { count: flagged }] = await Promise.all([
     supabase.from("candidates").select("id", { count: "exact", head: true }).eq("job_id", id),
     supabase.from("rubrics").select("id").eq("job_id", id).eq("status", "draft").maybeSingle(),
     budgetFor(supabase, user.id),
+    job.current_rubric_id
+      ? supabase.from("evaluations").select("id", { count: "exact", head: true })
+          .eq("rubric_id", job.current_rubric_id).eq("needs_review", true).eq("disqualified", false)
+      : Promise.resolve({ count: 0 }),
   ]);
+  const applicants = count ?? 0;
+  const base = `/jobs/${id}`;
+  const hasForm = Boolean(job.google_form_id || job.sheet_id);
+
+  // The one thing that moves this job forward right now.
+  const next =
+    job.status === "closed" ? { label: "View candidates", href: `${base}/candidates` }
+    : !job.description.trim() ? { label: "Add job description", href: `${base}/setup` }
+    : !hasForm ? { label: "Set up the form", href: `${base}/setup` }
+    : !job.current_rubric_id ? { label: draft ? "Approve the rubric" : "Create the rubric", href: `${base}/rubric` }
+    : flagged ? { label: `Review ${flagged} flagged`, href: `${base}/candidates?f=review` }
+    : applicants ? { label: "Review candidates", href: `${base}/candidates` }
+    : null;
 
   // Pull new responses while the recruiter is looking, at most every 2 minutes.
   // Keeps things fresh locally (no scheduler) and between scheduled runs in production.
@@ -34,15 +52,24 @@ export default async function JobLayout({ children, params }: LayoutProps<"/jobs
 
   return (
     <>
-      <div className="row" style={{ gap: 10, marginBottom: 4 }}>
+      <nav className="crumbs" aria-label="Breadcrumb">
         <Link href={job.status === "closed" ? "/jobs?view=closed" : "/jobs"} className="crumb">Jobs</Link>
-        <span className="muted" style={{ fontSize: 13 }}>/</span>
-        <b>{job.title}</b>
-        {job.location && <span className="mono muted" style={{ fontSize: 13 }}>· {job.location}</span>}
-        {job.status === "closed" && <span className="chip neutral">Closed</span>}
-        <span className="spacer" />
-        <JobHeaderActions jobId={id} status={job.status} />
-      </div>
+        <span aria-hidden="true">›</span>
+        <span aria-current="page">{job.title}</span>
+      </nav>
+      <header className="job-head">
+        <span className="job-ico" aria-hidden="true"><Icon name="briefcase" size={24} /></span>
+        <div className="job-head-txt">
+          <h1>{job.title}</h1>
+          <div className="job-meta">
+            <span className={`status-dot ${job.status}`}>{job.status === "open" ? "Open" : "Closed"}</span>
+            {job.location && <span><Icon name="pin" size={14} />{job.location}</span>}
+            <span><Icon name="users" size={14} />{applicants} applicant{applicants === 1 ? "" : "s"}</span>
+            <span>Created {new Date(job.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}</span>
+          </div>
+        </div>
+        <JobHeaderActions jobId={id} status={job.status} next={next} />
+      </header>
       {job.status === "closed" && (
         <div className="banner" style={{ margin: "12px 0 0" }}>
           <div className="txt">
@@ -58,7 +85,7 @@ export default async function JobLayout({ children, params }: LayoutProps<"/jobs
           <Link className="pillbtn btn-ghost btn-sm" href="/integrations" style={{ textDecoration: "none" }}>Change budget</Link>
         </div>
       )}
-      <JobTabs jobId={id} candidates={count ?? 0} rubricAttention={job.status === "open" && (!job.current_rubric_id || !!draft)} />
+      <JobTabs jobId={id} candidates={applicants} rubricAttention={job.status === "open" && (!job.current_rubric_id || !!draft)} />
       {children}
     </>
   );

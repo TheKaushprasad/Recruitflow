@@ -3,12 +3,16 @@ import { activeProvider, PROVIDER_LABEL } from "@/lib/ai/provider";
 import { requireUser } from "@/lib/supabase/server";
 import { getCandidates, getInterviews, getJob, getRelatedJobs, getRubrics, getStages } from "@/lib/data";
 import { RelatedJobs } from "@/components/RelatedJobs";
-import { SyncButton } from "@/components/SyncButton";
+import { SyncStatus } from "@/components/SyncStatus";
 import { LiveRefresh } from "@/components/LiveRefresh";
-import { nowMs, timeAgo } from "@/lib/format";
+import { Icon, type IconName } from "@/components/Icon";
+import { nowMs } from "@/lib/format";
+import { TopCandidates } from "./TopCandidates";
 
 // Server actions on this page may score candidates in the background (after()).
 export const maxDuration = 300;
+
+const TOP_N = 5;
 
 export default async function JobOverview({ params }: PageProps<"/jobs/[id]">) {
   const { id } = await params;
@@ -22,132 +26,163 @@ export default async function JobOverview({ params }: PageProps<"/jobs/[id]">) {
     getRelatedJobs(supabase, job),
   ]);
   const base = `/jobs/${id}`;
-  const scored = cands.filter((c) => c.evaluation && !c.stale);
-  const qualified = scored.filter((c) => !c.evaluation!.disqualified);
-  const strong = qualified.filter((c) => c.evaluation!.score >= 75).length;
-  const inPipeline = cands.filter((c) => c.stage_id).length;
-  const review = scored.filter((c) => c.evaluation!.needs_review).length;
   const now = nowMs(); // request time (server component)
-  const weekEnd = now + 7 * 864e5;
-  const upcoming = interviews.filter((i) => {
-    const t = new Date(i.starts_at).getTime();
-    return t > now && t < weekEnd;
-  }).length;
-  const rechecked = scored.filter((c) => c.evaluation!.criterion_results.some((r) => r.initial_confidence != null)).length;
-  const pending = cands.filter((c) => !c.evaluation || c.stale).length;
-  const errors = cands.filter((c) => c.score_status === "error").length;
+  const ai = PROVIDER_LABEL[activeProvider() ?? "openai"];
   const hasForm = Boolean(job.google_form_id || job.sheet_id);
   const calStages = new Set(stages.filter((s) => s.prompt_calendar).map((s) => s.id));
-  const threshold = Number(job.recheck_threshold);
-  const ai = PROVIDER_LABEL[activeProvider() ?? "openai"];
+
+  const scored = cands.filter((c) => c.evaluation && !c.stale);
+  const qualified = scored.filter((c) => !c.evaluation!.disqualified);
+  const review = scored.filter((c) => c.evaluation!.needs_review && !c.evaluation!.disqualified);
+  const inStage2 = cands.filter((c) => c.inStage2);
+  const reviewed2 = inStage2.filter((c) => c.deep?.status === "done").length;
+  const interviewing = cands.filter((c) => c.stage_id && !c.evaluation?.disqualified).length;
+  const newToday = cands.filter((c) => now - new Date(c.submitted_at ?? c.created_at).getTime() < 864e5).length;
+  const upcoming = interviews
+    .filter((i) => { const t = new Date(i.starts_at).getTime(); return t > now && t < now + 7 * 864e5; })
+    .sort((a, b) => a.starts_at.localeCompare(b.starts_at));
+  const errors = cands.filter((c) => c.score_status === "error").length;
+  const waiting = cands.filter((c) => !c.evaluation || c.stale).length - errors;
+  const noInterview = (c: (typeof cands)[number]) =>
+    !!c.stage_id && calStages.has(c.stage_id) && !interviews.some((i) => i.candidate_id === c.id && i.stage_id === c.stage_id);
+
+  // Best first: stage-1 rank, with the stage-2 score breaking ties.
+  const deepScore = (c: (typeof cands)[number]) => (c.deep?.status === "done" && !c.deepStale && !c.deep.disqualified ? c.deep.score ?? -1 : -1);
+  const top = [...qualified]
+    .sort((a, b) => (a.rank ?? 1e9) - (b.rank ?? 1e9) || deepScore(b) - deepScore(a))
+    .slice(0, TOP_N)
+    .map((c) => ({ c, needsInterview: noInterview(c) }));
+
+  const tiles: { n: number; label: string; hint: string; icon: IconName; tone: string; href: string }[] = [
+    { n: cands.length, label: "Applicants", hint: newToday ? `+${newToday} in the last 24 hours` : "None new in the last 24 hours", icon: "users", tone: "", href: `${base}/candidates` },
+    { n: review.length, label: "Need your review", hint: "Low-confidence or flagged scores", icon: "alert", tone: review.length ? "peach" : "", href: `${base}/candidates?f=review` },
+    { n: inStage2.length, label: "In stage 2", hint: inStage2.length ? `${reviewed2} CV review${reviewed2 === 1 ? "" : "s"} done` : "Move your best candidates on", icon: "file", tone: "mint", href: `${base}/candidates?f=stage2` },
+    {
+      n: upcoming.length, label: "Interviews this week", icon: "calendar", tone: "", href: `${base}/pipeline`,
+      hint: upcoming.length ? `Next: ${new Date(upcoming[0].starts_at).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" })}` : "Next 7 days",
+    },
+  ];
+
+  const funnel = [
+    { label: "Applied", n: cands.length, href: `${base}/candidates` },
+    { label: "Scored", n: scored.length, href: `${base}/candidates?f=qualified` },
+    { label: "Stage 2", n: inStage2.length, href: `${base}/candidates?f=stage2` },
+    { label: "Interviewing", n: interviewing, href: `${base}/pipeline` },
+  ];
+  const pct = (n: number) => (cands.length ? Math.round((n / cands.length) * 100) : 0);
 
   const attn: { sev?: "bad"; title: string; detail: string; href: string; cta: string }[] = [];
-  if (!job.description.trim()) attn.push({ title: "Add the job description", detail: `${ai} builds the scoring rubric from it.`, href: `${base}/setup`, cta: "Open job setup" });
-  if (!hasForm) attn.push({ title: "No application form yet", detail: "Build one here or link an existing Google Form and its response Sheet.", href: `${base}/setup`, cta: "Set up form" });
-  if (!rubrics.current) attn.push({ title: rubrics.draft ? "Draft rubric waiting for your approval" : "No rubric yet", detail: "Nobody is scored until a rubric is approved.", href: `${base}/rubric`, cta: "Review rubric" });
-  else if (rubrics.draft) attn.push({ title: `Rubric v${rubrics.draft.version} has unapproved changes`, detail: `Scores still use v${rubrics.current.version}.`, href: `${base}/rubric`, cta: "Review changes" });
-  if (job.last_sync_error) attn.push({ sev: "bad", title: "Couldn't read new responses", detail: job.last_sync_error, href: "/integrations", cta: "Check integrations" });
-  if (errors) attn.push({ sev: "bad", title: `${errors} candidate${errors === 1 ? "" : "s"} failed to score`, detail: "Open Candidates and retry them.", href: `${base}/candidates?f=error`, cta: "View" });
+  if (job.last_sync_error) attn.push({ sev: "bad", title: "Couldn't read new responses", detail: job.last_sync_error, href: "/integrations", cta: "Check" });
+  if (errors) attn.push({ sev: "bad", title: `${errors} failed to score`, detail: "Retry them from the Candidates tab.", href: `${base}/candidates?f=error`, cta: "View" });
+  if (rubrics.current && rubrics.draft) attn.push({ title: `Rubric v${rubrics.draft.version} isn't approved`, detail: `Scores still use v${rubrics.current.version}.`, href: `${base}/rubric`, cta: "Review" });
   for (const c of scored.filter((c) => c.evaluation!.disqualified && c.evaluation!.score >= 80))
-    attn.push({ sev: "bad", title: `${c.name} would rank near the top but fails a hard filter`, detail: c.evaluation!.reason, href: `${base}/candidates?c=${c.id}`, cta: "View evidence" });
-  for (const c of scored.filter((c) => c.evaluation!.needs_review))
-    attn.push({ title: `${c.name}: low confidence even after the ${ai} recheck`, detail: `At least one criterion is below ${threshold.toFixed(2)}. Read the evidence before deciding.`, href: `${base}/candidates?c=${c.id}`, cta: "View evidence" });
-  for (const c of cands.filter((c) => c.stage_id && calStages.has(c.stage_id) && !interviews.some((i) => i.candidate_id === c.id && i.stage_id === c.stage_id)))
-    attn.push({ title: `${c.name} has no interview booked for ${stages.find((s) => s.id === c.stage_id)?.name}`, detail: "Schedule it from their pipeline card.", href: `${base}/pipeline`, cta: "Open pipeline" });
+    attn.push({ sev: "bad", title: `${c.name} scores high but fails a hard filter`, detail: c.evaluation!.reason, href: `${base}/candidates?c=${c.id}`, cta: "View" });
+  if (review.length) attn.push({ title: `${review.length} candidate${review.length === 1 ? " needs" : "s need"} review`, detail: `Low confidence (under ${Number(job.recheck_threshold).toFixed(2)}) or a flagged answer. Read the evidence before deciding.`, href: `${base}/candidates?f=review`, cta: "Review" });
+  const unbooked = cands.filter(noInterview);
+  if (unbooked.length) attn.push({ title: `${unbooked.length} without an interview booked`, detail: unbooked.slice(0, 3).map((c) => c.name).join(", ") + (unbooked.length > 3 ? "…" : ""), href: `${base}/pipeline`, cta: "Schedule" });
+
+  const setup: { done: boolean; label: string; detail: string; href: string }[] = [
+    { done: !!job.description.trim(), label: "Job description", detail: job.description.trim() ? "Added" : `${ai} builds the rubric from it`, href: `${base}/setup` },
+    { done: hasForm, label: "Application form", detail: hasForm ? (job.form_source === "linked" ? "Linked Google Form" : "Google Form live") : "Build or link one", href: `${base}/setup` },
+    {
+      done: !!rubrics.current, label: "Rubric", href: `${base}/rubric`,
+      detail: rubrics.current
+        ? `v${rubrics.current.version} approved · ${rubrics.current.rubric_criteria.filter((c) => c.stage === 1 && c.enabled).length} stage-1 · ${rubrics.current.rubric_criteria.filter((c) => c.stage === 2 && c.enabled).length} stage-2 checks`
+        : rubrics.draft ? "Draft waiting for approval" : "Not created yet",
+    },
+    { done: stages.length > 0, label: "Interview pipeline", detail: stages.length ? stages.map((s) => s.name).join(" → ") : "Add stages", href: `${base}/pipeline` },
+  ];
+  const setupDone = setup.every((s) => s.done);
 
   return (
     <>
-      <div className="hero-grid">
-        <div>
-          <p className="eyebrow">{job.title}{job.location ? ` · ${job.location}` : ""}</p>
-          <h1 className="hero">
-            {scored.length
-              ? `${scored.length} applicants ranked. ${strong} worth a conversation.`
-              : cands.length
-                ? `${cands.length} applicant${cands.length === 1 ? "" : "s"} in. ${rubrics.current ? "Scoring now." : "Approve a rubric to rank them."}`
-                : "Waiting for your first applicants."}
-          </h1>
-          <p className="lede">
-            Every candidate is scored against the same rubric, criterion by criterion, with the evidence behind each decision. Nothing is sent without your say-so.
-          </p>
-          <div className="row">
-            <Link className="pillbtn btn-lime" href={`${base}/candidates`} style={{ textDecoration: "none" }}>Review ranked candidates</Link>
-            <Link className="pillbtn btn-ghost" href={`${base}/pipeline`} style={{ textDecoration: "none" }}>Open pipeline</Link>
-          </div>
-        </div>
-        <div className="pulse">
-          <div className="big">
-            <div style={{ fontSize: 14 }}>Today&apos;s hiring pulse</div>
-            <div className="n mono">{String(inPipeline).padStart(2, "0")}</div>
-            <div style={{ fontSize: 14 }}>candidates in your interview pipeline</div>
-          </div>
-          <div className="pair">
-            <Link className="tile mint" href={`${base}/candidates?f=review`} style={{ textDecoration: "none" }}>
-              <div className="n mono">{String(review).padStart(2, "0")}</div>
-              <div style={{ fontSize: 13.5 }}>Need recruiter review</div>
-            </Link>
-            <Link className="tile peach" href={`${base}/pipeline`} style={{ textDecoration: "none" }}>
-              <div className="n mono">{String(upcoming).padStart(2, "0")}</div>
-              <div style={{ fontSize: 13.5 }}>Interviews in the next 7 days</div>
-            </Link>
-          </div>
-          <p>Jev scores each criterion. {ai} rechecks anything under {threshold.toFixed(2)} confidence. You make every call.</p>
-        </div>
-      </div>
-
-      <hr className="rule" />
-      <p className="eyebrow">This job, end to end</p>
-      <div className="steps">
-        <Link className="step" href={`${base}/setup`} style={{ textDecoration: "none" }}>
-          <span className="k">01</span><h3>Capture</h3>
-          <p>Responses sync from your Google Form as they arrive.</p>
-          <span className="st">{hasForm ? <><span className="live" /> Synced {timeAgo(job.last_synced_at)}</> : "Not connected"}</span>
-        </Link>
-        <Link className="step" href={`${base}/rubric`} style={{ textDecoration: "none" }}>
-          <span className="k">02</span><h3>Understand</h3>
-          <p>{ai} turns the job description and your constraints into one rubric.</p>
-          <span className="st">
-            {rubrics.current
-              ? `Rubric v${rubrics.current.version} · ${rubrics.current.rubric_criteria.filter((c) => c.kind === "rule").length} form rules, ${rubrics.current.rubric_criteria.filter((c) => c.kind === "soft").length} criteria, ${rubrics.current.rubric_criteria.filter((c) => c.kind === "hard").length} AI filters`
-              : "Not approved yet"}
-          </span>
-        </Link>
-        <Link className="step" href={`${base}/candidates`} style={{ textDecoration: "none" }}>
-          <span className="k">03</span><h3>Evaluate</h3>
-          <p>Each answer is scored per criterion, with evidence you can audit.</p>
-          <span className="st">{scored.length} scored · {rechecked} rechecked{pending ? ` · ${pending} pending` : ""}</span>
-        </Link>
-        <Link className="step" href={`${base}/pipeline`} style={{ textDecoration: "none" }}>
-          <span className="k">04</span><h3>Schedule</h3>
-          <p>Move people through your stages and book interviews from the card.</p>
-          <span className="st">{interviews.length} interview{interviews.length === 1 ? "" : "s"} booked</span>
-        </Link>
-      </div>
-
-      <hr className="rule" />
-      <div className="section-head">
-        <div>
-          <p className="eyebrow" style={{ margin: "0 0 8px" }}>Needs you</p>
-          <h2>{attn.length ? `${attn.length} thing${attn.length === 1 ? "" : "s"} before your next shortlist` : "All clear"}</h2>
-        </div>
-        <div className="row">
-          <Link className="pillbtn btn-ghost btn-sm" href={`/emails?job=${id}`} style={{ textDecoration: "none" }}>Email history</Link>
-          {hasForm && job.status === "open" && <SyncButton jobId={id} />}
-          <LiveRefresh jobId={id} busy={cands.some((c) => c.score_status === "scoring")} />
-        </div>
-      </div>
-      <div className="attn">
-        {attn.length ? (
-          attn.map((a, i) => (
-            <div className="attn-item" key={i}>
-              <span className={`sev ${a.sev ?? ""}`} />
-              <div className="txt"><b>{a.title}</b><span>{a.detail}</span></div>
-              <Link className="pillbtn btn-ghost btn-sm" href={a.href} style={{ textDecoration: "none" }}>{a.cta}</Link>
+      <LiveRefresh jobId={id} busy={cands.some((c) => c.score_status === "scoring")} />
+      <div className="stat-tiles">
+        {tiles.map((t) => (
+          <Link key={t.label} href={t.href} className={`stat-tile ${t.tone}`} style={{ textDecoration: "none", color: "inherit" }}>
+            <span className="stat-ico"><Icon name={t.icon} size={18} /></span>
+            <div>
+              <div className="stat-n mono">{t.n}</div>
+              <b>{t.label}</b>
+              <span suppressHydrationWarning>{t.hint}</span>
             </div>
-          ))
-        ) : (
-          <div className="attn-item"><div className="txt"><b>Nothing needs your attention.</b><span>New responses are scored automatically.</span></div></div>
-        )}
+          </Link>
+        ))}
+      </div>
+
+      <div className="ov-grid">
+        <div className="ov-main">
+          <TopCandidates
+            jobId={id}
+            items={top}
+            total={qualified.length}
+            firstStage={stages[0] ? { id: stages[0].id, name: stages[0].name } : null}
+            threshold={Number(job.recheck_threshold)}
+            canScore={!!rubrics.current}
+          />
+
+          <section className="ov-card">
+            <div className="ov-card-head">
+              <div>
+                <h2>Hiring progress</h2>
+                <p>
+                  {waiting > 0 ? `${waiting} waiting to be scored · ` : ""}
+                  {scored.length - qualified.length} rejected by filters
+                </p>
+              </div>
+              <Link className="pillbtn btn-ghost btn-sm" href={`${base}/pipeline`} style={{ textDecoration: "none" }}>Open pipeline →</Link>
+            </div>
+            <ol className="funnel-bar">
+              {funnel.map((f, i) => (
+                <li key={f.label} className={f.n ? "on" : ""}>
+                  <Link href={f.href}>
+                    <span className="fb-label">{f.label}</span>
+                    <b className="mono">{f.n}</b>
+                    <span className="fb-pct">{i === 0 ? "all applicants" : `${pct(f.n)}%`}</span>
+                  </Link>
+                </li>
+              ))}
+            </ol>
+          </section>
+        </div>
+
+        <aside className="ov-side">
+          <section className="ov-card">
+            <div className="ov-card-head"><h2>Needs you</h2>{attn.length > 0 && <span className="chip warn">{attn.length}</span>}</div>
+            {attn.length ? (
+              <ul className="needs">
+                {attn.map((a, i) => (
+                  <li key={i}>
+                    <span className={`sev-dot ${a.sev ?? ""}`} aria-hidden="true" />
+                    <div className="txt"><b>{a.title}</b><span>{a.detail}</span></div>
+                    <Link className="btn-link" href={a.href} style={{ fontSize: 13 }}>{a.cta}</Link>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="hint" style={{ margin: 0 }}>Nothing right now. New responses are scored automatically.</p>
+            )}
+          </section>
+
+          <section className="ov-card">
+            <div className="ov-card-head">
+              <h2>Setup</h2>
+              {setupDone ? <span className="chip good"><Icon name="check" size={13} /> Complete</span> : <span className="chip warn">{setup.filter((s) => !s.done).length} to do</span>}
+            </div>
+            <ul className="setup-list">
+              {setup.map((s) => (
+                <li key={s.label} className={s.done ? "done" : ""}>
+                  <span className="tick" aria-hidden="true">{s.done ? <Icon name="check" size={13} /> : null}</span>
+                  <Link href={s.href}><b>{s.label}</b><span>{s.detail}</span></Link>
+                </li>
+              ))}
+            </ul>
+            <div className="setup-foot">
+              {hasForm && job.status === "open" && <SyncStatus jobId={id} lastSyncedAt={job.last_synced_at} error={job.last_sync_error} />}
+              <Link className="btn-link" href={`/emails?job=${id}`} style={{ fontSize: 13 }}>Email history</Link>
+            </div>
+          </section>
+        </aside>
       </div>
 
       <hr className="rule" />

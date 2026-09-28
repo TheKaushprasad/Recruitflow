@@ -7,8 +7,13 @@ import { Icon } from "./Icon";
 import { Menu } from "./Menu";
 import { useAction } from "./Toast";
 
-/** Job page header actions: "Create similar job" up front; closing and deleting tucked into ⋮. */
-export function JobHeaderActions({ jobId, status }: { jobId: string; status: "open" | "closed" }) {
+/** Job page header actions: "Create similar job", the next step for this job, and closing/deleting tucked into ⋮. */
+export function JobHeaderActions({ jobId, status, next }: {
+  jobId: string;
+  status: "open" | "closed";
+  /** The context-aware main action ("Review 3 flagged", "Approve the rubric"…). */
+  next?: { label: string; href: string } | null;
+}) {
   const router = useRouter();
   const { run, pending } = useAction();
   const setOpen = async (open: boolean) => {
@@ -21,6 +26,9 @@ export function JobHeaderActions({ jobId, status }: { jobId: string; status: "op
       <Link className="pillbtn btn-ghost btn-sm btn-icon" href={`/jobs?from=${jobId}`} style={{ textDecoration: "none" }}>
         <Icon name="plus" size={15} /> Create similar job
       </Link>
+      {next && (
+        <Link className="pillbtn btn-lime btn-sm" href={next.href} style={{ textDecoration: "none" }}>{next.label}</Link>
+      )}
       <Menu
         label="More job actions"
         busy={pending}
