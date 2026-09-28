@@ -39,7 +39,7 @@ export async function saveConnection(recruiterId: string, code: string) {
   const { tokens } = await client.getToken(code);
   if (!tokens.refresh_token) {
     throw new Error(
-      "Google did not return a refresh token. Remove recruitflow at myaccount.google.com/permissions and connect again.",
+      "Google did not return a refresh token. Remove reqroot at myaccount.google.com/permissions and connect again.",
     );
   }
   client.setCredentials(tokens);

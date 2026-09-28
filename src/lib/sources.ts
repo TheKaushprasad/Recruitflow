@@ -17,7 +17,7 @@ export interface SourceResult {
   note: string;
 }
 
-const UA = "recruitflow/1.0 (candidate screening; +https://github.com/TheKaushprasad/Recruitflow)";
+const UA = "reqroot/1.0 (candidate screening; +https://github.com/TheKaushprasad/Recruitflow)";
 const TIMEOUT_MS = 20_000;
 
 function isPrivateIp(ip: string) {

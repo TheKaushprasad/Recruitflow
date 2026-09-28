@@ -1,4 +1,4 @@
-# recruitflow
+# reqroot
 
 Rubric-based candidate screening. A recruiter links a job description to a Google Form. Every applicant is scored against one rubric, criterion by criterion, with evidence for each decision. Candidates then move through an interview pipeline, and invites and emails go out from the recruiter's own Google account.
 
@@ -58,12 +58,12 @@ Sign in, open **Integrations → Connect Google**, then create a job.
 - **Create similar job:** available on every job's header and in its **Related jobs** section.
 - **Related jobs:** each job's overview lists jobs that share its template or have a similar title, with applicants, qualified count, average score, how many reached the final stage, and interviews.
 - **History tab:** a dated timeline for each job. It covers creation (and which job it was based on), form changes, rubric versions and approvals, applications per day, pipeline moves, interviews, emails, and closing or reopening. Filter by type.
-- **Close / reopen:** use the button at the top right of any job. Closing stops syncing and scoring, and switches off responses on the Google Form when recruitflow can reach it. Candidates, scores, emails and interviews all stay available.
+- **Close / reopen:** use the button at the top right of any job. Closing stops syncing and scoring, and switches off responses on the Google Form when reqroot can reach it. Candidates, scores, emails and interviews all stay available.
 - **History:** **Jobs → Closed** lists past jobs and their closing dates. Each job's **Rubric** tab lists every version, with how many candidates were scored on it. **Emails** can be filtered by job, and each job's overview links to its email history.
-- **Delete:** at the bottom of **Job setup**, type the job title to confirm. This permanently removes the job's data in recruitflow. Your Google Form, Sheet, sent emails and calendar events are left untouched.
+- **Delete:** at the bottom of **Job setup**, type the job title to confirm. This permanently removes the job's data in reqroot. Your Google Form, Sheet, sent emails and calendar events are left untouched.
 
 ## Differences from the PRD
-- **In-app forms can't auto-link a response Sheet.** The Forms API exposes `linkedSheetId` as read-only. recruitflow reads those responses through the Forms API instead. **Export to Sheet** writes ranked results to a new spreadsheet (or to the linked Sheet for linked forms).
+- **In-app forms can't auto-link a response Sheet.** The Forms API exposes `linkedSheetId` as read-only. reqroot reads those responses through the Forms API instead. **Export to Sheet** writes ranked results to a new spreadsheet (or to the linked Sheet for linked forms).
 - **No n8n.** Orchestration (ingest → Jev → OpenAI → Supabase) runs inside the app, triggered by `/api/cron`.
 - **OpenAI instead of Claude.** OpenAI drafts the rubric and does the rechecks and CV reviews.
 - **Resume files aren't read.** Candidates paste a resume link, which is shown for context only.

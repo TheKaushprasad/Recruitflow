@@ -20,7 +20,7 @@ export function AppHeader({ email, name, avatar }: { email: string; name: string
   return (
     <aside className="side" data-open={open || undefined}>
       <div className="side-top">
-        <Link className="logo" href="/jobs">recruit<span>flow</span></Link>
+        <Link className="logo" href="/jobs">req<span>root</span></Link>
         <button className="iconbtn side-toggle" aria-label={open ? "Close menu" : "Open menu"} aria-expanded={open} onClick={() => setOpen((o) => !o)}>
           <Icon name={open ? "x" : "menu"} size={20} />
         </button>

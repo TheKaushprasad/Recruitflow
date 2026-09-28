@@ -7,7 +7,7 @@ const hanken = Hanken_Grotesk({ subsets: ["latin"], variable: "--font-hanken", w
 const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jbmono", weight: ["400", "500"] });
 
 export const metadata: Metadata = {
-  title: "recruitflow",
+  title: "reqroot",
   description: "Rubric-based candidate screening with evidence you can defend.",
 };
 

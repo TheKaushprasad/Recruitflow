@@ -54,7 +54,7 @@ export default async function IntegrationsPage({ searchParams }: PageProps<"/int
         <div>
           <p className="eyebrow" style={{ margin: "0 0 8px" }}>Integrations</p>
           <h2>Connected once, used by every job</h2>
-          <p>Your Google account is a one-time connection. recruitflow asks only for what the workflow needs, and never for Google Drive.</p>
+          <p>Your Google account is a one-time connection. reqroot asks only for what the workflow needs, and never for Google Drive.</p>
         </div>
       </div>
       {msg && <div className={`banner ${msg[1] === "ok" ? "ok" : ""}`} style={msg[1] === "bad" ? { background: "var(--bad-soft)" } : undefined}><div className="txt">{msg[0]}</div></div>}
@@ -132,7 +132,7 @@ export default async function IntegrationsPage({ searchParams }: PageProps<"/int
         </p>
       </div>
 
-      <h3 style={{ margin: "40px 0 12px" }}>How an application moves through recruitflow</h3>
+      <h3 style={{ margin: "40px 0 12px" }}>How an application moves through reqroot</h3>
       <div className="flow">
         <div><b>New response</b><span>Forms API or linked Sheet</span></div>
         <div><b>Stage 1 filters</b><span>Exact checks, AI check for free text</span></div>

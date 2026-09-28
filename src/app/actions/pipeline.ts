@@ -169,7 +169,7 @@ export async function exportResults(jobId: string): Promise<ActionResult> {
     const { auth } = await googleFor(user.id);
     let sheetId = job.sheet_id;
     if (!sheetId) {
-      sheetId = await createSpreadsheet(auth, `${job.title} — recruitflow results`);
+      sheetId = await createSpreadsheet(auth, `${job.title} — reqroot results`);
       await supabase.from("jobs").update({ sheet_id: sheetId }).eq("id", jobId);
     }
     await writeResultsTab(auth, sheetId, `Ranked — v${current.version}`, [header, ...rows]);

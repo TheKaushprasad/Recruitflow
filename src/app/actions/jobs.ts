@@ -250,7 +250,7 @@ export async function updateJobSettings(
 }
 
 /**
- * Closes a job: stops syncing and scoring new responses and, where recruitflow
+ * Closes a job: stops syncing and scoring new responses and, where reqroot
  * can reach the Google Form, stops it accepting responses. Everything stays viewable.
  */
 export async function setJobOpen(jobId: string, open: boolean): Promise<ActionResult> {
@@ -274,7 +274,7 @@ export async function setJobOpen(jobId: string, open: boolean): Promise<ActionRe
       } catch {
         formNote = open
           ? " Turn responses back on in Google Forms if you'd switched them off."
-          : " recruitflow couldn't switch off the Google Form — turn off “Accepting responses” in Google Forms.";
+          : " reqroot couldn't switch off the Google Form — turn off “Accepting responses” in Google Forms.";
       }
     }
     revalidatePath("/jobs");

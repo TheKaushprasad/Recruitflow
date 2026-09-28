@@ -1,5 +1,6 @@
--- Every-minute queue worker for recruitflow, run by Supabase (free) instead of Vercel Cron
+-- Every-minute queue worker for reqroot, run by Supabase (free) instead of Vercel Cron
 -- (Vercel Hobby only allows one run per day).
+-- (The job and secret keep their original "recruitflow_" names: they are already live in the database.)
 --
 -- Run once in Supabase → SQL Editor, after replacing the two placeholders:
 --   <APP_URL>      your deployed app, e.g. https://recruitflow-2cvt.vercel.app

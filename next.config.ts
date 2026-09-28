@@ -10,13 +10,13 @@ const SERVER_AT_RUNTIME = [
 ];
 if (process.env.VERCEL || process.env.CI) {
   const status = (k: string) => `${k}=${process.env[k]?.trim() ? "set" : "MISSING"}`;
-  console.log(`[recruitflow] build env (${process.env.VERCEL_ENV ?? "unknown"}): ${PUBLIC_AT_BUILD.map(status).join(", ")}`);
-  console.log(`[recruitflow] runtime env: ${SERVER_AT_RUNTIME.map(status).join(", ")}`);
+  console.log(`[reqroot] build env (${process.env.VERCEL_ENV ?? "unknown"}): ${PUBLIC_AT_BUILD.map(status).join(", ")}`);
+  console.log(`[reqroot] runtime env: ${SERVER_AT_RUNTIME.map(status).join(", ")}`);
   // Shape of the OpenAI key only (never the key): catches quotes, stray spaces and cut-off pastes.
   const k = process.env.OPENAI_API_KEY ?? "";
   if (k) {
     console.log(
-      `[recruitflow] OPENAI_API_KEY shape: length ${k.length}, starts "sk-": ${k.startsWith("sk-")}, ` +
+      `[reqroot] OPENAI_API_KEY shape: length ${k.length}, starts "sk-": ${k.startsWith("sk-")}, ` +
         `quotes: ${/^["']|["']$/.test(k)}, spaces/newlines: ${/\s/.test(k)}`,
     );
   }

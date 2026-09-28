@@ -177,7 +177,7 @@ export function SetupForm({ job, questions, googleConnected, responses, aiName, 
                 <input type="text" id="lf" placeholder="https://docs.google.com/forms/d/…/edit" value={formUrl} onChange={(e) => setFormUrl(e.target.value)} /></div>
               <div className="field"><label className="f" htmlFor="ls">Response Sheet link</label>
                 <input type="text" id="ls" placeholder="https://docs.google.com/spreadsheets/d/…" value={sheetUrl} onChange={(e) => setSheetUrl(e.target.value)} />
-                <p className="hint">In your form, open Responses → Link to Sheets, then paste that sheet&apos;s link here. recruitflow only reads this one sheet.</p></div>
+                <p className="hint">In your form, open Responses → Link to Sheets, then paste that sheet&apos;s link here. reqroot only reads this one sheet.</p></div>
               <button className="pillbtn btn-lime btn-sm" disabled={!!busy || !googleConnected} onClick={() => act("link", () => linkExistingForm(job.id, formUrl, sheetUrl))}>
                 {busy === "link" ? <span className="spin" /> : "Link form & sheet"}
               </button>

@@ -30,7 +30,7 @@ export default function LoginPage() {
     <div className="center-page">
       <div className="auth-card">
         <p className="logo" style={{ marginBottom: 28 }}>
-          recruit<span>flow</span>
+          req<span>root</span>
         </p>
         <h1 className="hero" style={{ fontSize: 44 }}>Move the right people forward.</h1>
         {state === "sent" ? (
