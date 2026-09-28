@@ -14,7 +14,7 @@ export interface RuleRow {
   isNew?: boolean;
 }
 
-const ACTION_CHIP: Record<RuleAction, string> = { reject: "bad", flag: "warn", score: "good" };
+export const ACTION_CHIP: Record<RuleAction, string> = { reject: "bad", flag: "warn", score: "good" };
 
 /** Questions worth a stage-1 check: everything except identity and link questions. */
 export function filterableQuestions(questions: RuleQuestion[]) {
@@ -23,7 +23,7 @@ export function filterableQuestions(questions: RuleQuestion[]) {
   );
 }
 
-const KIND_HINT = (type: string) =>
+export const KIND_HINT = (type: string) =>
   type === "paragraph" ? "open-ended → compare with expected answer" : type === "short" ? "free text → AI check" : "exact";
 
 /**
@@ -42,80 +42,8 @@ export function newRule(questions: RuleQuestion[], title?: string): FormRule {
 /** Default points for a new check: open-ended answers weigh more than single-field checks. */
 export const defaultPoints = (rule: FormRule) => (rule.op === "ai_expected" ? 30 : 10);
 
-export function FormRulesEditor({ jobId, rows, editable, questions, scoreTotal, onPatch, onRemove, onAdd }: {
-  jobId: string;
-  rows: RuleRow[];
-  editable: boolean;
-  questions: RuleQuestion[];
-  /** total weight of scored items, to show a score-rule's share */
-  scoreTotal: number;
-  onPatch: (id: string, p: Partial<RuleRow>) => void;
-  onRemove: (id: string) => void;
-  /** add a filter, optionally for a specific question */
-  onAdd: (question?: string) => void;
-}) {
-  const covered = new Set(rows.map((r) => r.rule?.question.trim().toLowerCase()));
-  const suggestions = filterableQuestions(questions).filter((q) => !covered.has(q.title.trim().toLowerCase()));
-  return (
-    <div className="panel">
-      <div className="section-head" style={{ marginBottom: 6 }}>
-        <h3>Checks on form answers</h3>
-        <span className="muted" style={{ fontSize: 13 }}>One per question · together they make the stage-1 score</span>
-      </div>
-      <p className="hint" style={{ margin: "0 0 10px" }}>
-        Dropdowns, numbers and dates are checked exactly in code. Short free-text answers (“Bangalore / BLR”, “12L”) use an AI check against the requirement you write.
-        Open-ended answers (“Tell us about a project…”) are graded by AI against an expected answer you write or generate from the JD.
-        Blank or unclear answers are flagged for review, never rejected.
-      </p>
-
-      {editable && suggestions.length > 0 && (
-        <div className="status-box" style={{ margin: "0 0 12px" }}>
-          <b style={{ fontSize: 13.5 }}>Form questions without a check</b>
-          <div className="row" style={{ gap: 6 }}>
-            {suggestions.map((q) => (
-              <button key={q.title} type="button" className="pillbtn btn-ghost btn-sm" onClick={() => onAdd(q.title)}>
-                + {q.title} <span className="muted" style={{ fontWeight: 400 }}>· {KIND_HINT(q.type)}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {rows.length === 0 && (
-        <p className="muted" style={{ fontSize: 14 }}>
-          No checks yet. {editable ? "Add one from the suggestions above, or with “+ Add check”." : "Click Edit to add some."}
-        </p>
-      )}
-
-      {rows.map((r) =>
-        editable ? (
-          <RuleEditorRow key={r.id} jobId={jobId} row={r} questions={questions} scoreTotal={scoreTotal} onPatch={(p) => onPatch(r.id, p)} onRemove={() => onRemove(r.id)} />
-        ) : (
-          <div className="hard" key={r.id} style={{ opacity: r.enabled ? 1 : 0.5 }}>
-            <span className={`chip ${r.rule ? ACTION_CHIP[r.rule.action] : "neutral"}`} style={{ flex: "none" }}>
-              {r.rule?.action === "reject" ? "Reject" : r.rule?.action === "flag" ? "Flag" : "Score"}
-            </span>
-            <div className="x">
-              <b>{r.name}</b>
-              {r.rule && <div className="src">{describeRule(r.rule)}{scoreTotal && r.weight ? ` · ${Math.round((r.weight / scoreTotal) * 100)}% of the stage-1 score when met` : ""}</div>}
-              {r.source_constraint && <div className="src">From your constraint: “{r.source_constraint}”</div>}
-              {!r.enabled && <div className="src">Not used</div>}
-            </div>
-          </div>
-        ),
-      )}
-
-      {editable && (
-        <button className="pillbtn btn-ghost btn-sm" style={{ marginTop: 12 }} onClick={() => onAdd()} disabled={!questions.length}
-          title={!questions.length ? "Add form questions in Job setup first" : undefined}>
-          + Add check
-        </button>
-      )}
-    </div>
-  );
-}
-
-function RuleEditorRow({ jobId, row, questions, scoreTotal, onPatch, onRemove }: {
+/** Editor for one form rule (question, check, values, expected answer, action, points). */
+export function RuleEditorRow({ jobId, row, questions, scoreTotal, onPatch, onRemove }: {
   jobId: string;
   row: RuleRow;
   questions: RuleQuestion[];

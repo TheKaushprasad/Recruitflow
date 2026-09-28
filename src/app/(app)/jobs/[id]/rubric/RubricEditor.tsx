@@ -1,20 +1,24 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useAction } from "@/components/Toast";
+import { Icon } from "@/components/Icon";
+import { Menu } from "@/components/Menu";
 import { approveRubric, discardDraft, editRubric, generateStage, saveDraft, type NewCriterion } from "@/app/actions/rubric";
 import { updateJobSettings } from "@/app/actions/jobs";
-import { FormRulesEditor, defaultPoints, newRule } from "@/components/FormRulesEditor";
+import { defaultPoints, newRule } from "@/components/FormRulesEditor";
 import { providerLabel } from "@/lib/ai/provider";
-import type { RuleQuestion } from "@/lib/rules";
+import { validateRule, type RuleQuestion } from "@/lib/rules";
 import type { Criterion, Job, Rubric } from "@/lib/types";
+import { CriteriaTable, EditPanel, RulesTable, type C } from "./RubricTables";
 
 type R = Rubric & { rubric_criteria: Criterion[] };
-type C = Pick<Criterion, "id" | "kind" | "name" | "description" | "weight" | "enabled" | "source_constraint" | "bias_flag" | "rule" | "stage"> & { isNew?: boolean };
 
 /** Weighted items that make up a stage's score. In stage 1, every filter earns its points when passed. */
 const scoresIn = (c: C, stage: 1 | 2) => c.stage === stage && c.enabled && (c.kind === "soft" || (c.kind === "rule" && c.weight > 0));
+const fmt = (d: string | null | undefined) =>
+  d ? new Date(d).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
 
 export function RubricEditor({ job, current, draft, candidateCount, questions }: {
   job: Job;
@@ -31,56 +35,60 @@ export function RubricEditor({ job, current, draft, candidateCount, questions }:
   const [crit, setCrit] = useState<C[]>(shown?.rubric_criteria ?? []);
   const [removed, setRemoved] = useState<string[]>([]);
   const [dirty, setDirty] = useState(false);
-  const [bias, setBias] = useState(draft?.bias_reviewed ?? false);
   const [threshold, setThreshold] = useState(Number(job.recheck_threshold));
   const [busy, setBusy] = useState<string | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [approving, setApproving] = useState(false);
 
   // Re-sync local state when the server rubric changes (after generate / approve / edit).
-  const [seen, setSeen] = useState(`${shown?.id}:${shown?.rubric_criteria.length}:${shown?.model}`);
   const key = `${shown?.id}:${shown?.rubric_criteria.length}:${shown?.model}`;
+  const [seen, setSeen] = useState(key);
   if (key !== seen) {
     setSeen(key);
     setCrit(shown?.rubric_criteria ?? []);
     setRemoved([]);
     setDirty(false);
-    setBias(draft?.bias_reviewed ?? false);
+    setEditing(null);
   }
 
   const total1 = useMemo(() => crit.filter((c) => scoresIn(c, 1)).reduce((a, c) => a + c.weight, 0), [crit]);
   const total2 = useMemo(() => crit.filter((c) => scoresIn(c, 2)).reduce((a, c) => a + c.weight, 0), [crit]);
-  const of = (stage: 1 | 2, kind: C["kind"]) => crit.filter((c) => c.stage === stage && c.kind === kind);
+  const of = (stage: 1 | 2, kinds: C["kind"][]) => crit.filter((c) => c.stage === stage && kinds.includes(c.kind));
+  const rules = of(1, ["rule"]);
+  const legacy1 = of(1, ["hard", "soft"]);
+  const stage2 = of(2, ["hard", "soft"]);
 
-  const changed = () => { setDirty(true); setBias(false); };
-  const patch = (id: string, p: Partial<C>) => { setCrit((all) => all.map((c) => (c.id === id ? { ...c, ...p } : c))); changed(); };
+  const patch = (id: string, p: Partial<C>) => { setCrit((all) => all.map((c) => (c.id === id ? { ...c, ...p } : c))); setDirty(true); };
   const remove = (id: string) => {
     const c = crit.find((x) => x.id === id);
-    setCrit(crit.filter((x) => x.id !== id));
-    if (c && !c.isNew) setRemoved([...removed, id]);
-    changed();
+    setCrit((all) => all.filter((x) => x.id !== id));
+    if (c && !c.isNew) setRemoved((r) => [...r, id]);
+    setDirty(true);
   };
   const add = (c: Omit<C, "id" | "isNew" | "enabled" | "source_constraint" | "bias_flag">) => {
-    setCrit([...crit, { ...c, id: `new-${crypto.randomUUID()}`, isNew: true, enabled: true, source_constraint: null, bias_flag: null }]);
-    changed();
+    const id = `new-${crypto.randomUUID()}`;
+    setCrit((all) => [...all, { ...c, id, isNew: true, enabled: true, source_constraint: null, bias_flag: null }]);
+    setDirty(true);
+    setEditing(id);
   };
-
-  async function act(name: string, fn: () => Promise<{ ok: boolean; message?: string; error?: string }>) {
-    setBusy(name);
-    const r = await run(fn);
-    setBusy(null);
-    if (r.ok) router.refresh();
-    return r;
-  }
+  const addRule = (question?: string) => {
+    const rule = newRule(questions, question);
+    add({ stage: 1, kind: "rule", name: rule.question || "New rule", description: "", weight: defaultPoints(rule), rule });
+  };
+  const addCriterion = (kind: "hard" | "soft") =>
+    add({ stage: 2, kind, weight: kind === "soft" ? 10 : 0, rule: null, name: kind === "soft" ? "New scored criterion" : "New must-have", description: "What to look for in the CV, portfolio or GitHub." });
 
   async function persist() {
     if (!draft || !dirty) return { ok: true as const };
     const orig = new Map(draft.rubric_criteria.map((c) => [c.id, c]));
     const patches = crit
       .filter((c) => !c.isNew)
-      .map((c) => ({ id: c.id, patch: { name: c.name, description: c.description, weight: c.weight, enabled: c.enabled, ...(c.kind === "rule" ? { rule: c.rule } : {}) } }))
+      .map((c) => ({ id: c.id, patch: { name: c.name, description: c.description, weight: c.weight, enabled: c.enabled, ...(c.kind === "rule" ? { rule: c.rule } : { kind: c.kind }) } }))
       .filter(({ id, patch }) => {
         const o = orig.get(id)!;
         return (
           o.name !== patch.name || o.description !== patch.description || o.weight !== patch.weight || o.enabled !== patch.enabled ||
+          ("kind" in patch && o.kind !== patch.kind) ||
           ("rule" in patch && JSON.stringify(o.rule) !== JSON.stringify(patch.rule))
         );
       });
@@ -92,233 +100,242 @@ export function RubricEditor({ job, current, draft, candidateCount, questions }:
     return r;
   }
 
-  /** Generating replaces one stage in the draft, so save pending edits first. */
-  async function generate(stage: 1 | 2) {
-    setBusy(`gen${stage}`);
-    const saved = await persist();
-    if (saved.ok) {
-      const r = await run(() => generateStage(job.id, stage));
-      if (r.ok) router.refresh();
-    }
+  async function step(name: string, fn: () => Promise<{ ok: boolean; message?: string; error?: string }>, saveFirst = false) {
+    setBusy(name);
+    const saved = saveFirst ? await persist() : { ok: true };
+    const r = saved.ok ? await run(fn) : saved;
     setBusy(null);
+    if (r.ok) router.refresh();
+    return r;
   }
+  const generate = (stage: 1 | 2) => step(`gen${stage}`, () => generateStage(job.id, stage), true);
 
-  const genButton = (stage: 1 | 2) => {
-    const has = crit.some((c) => c.stage === stage);
-    return (
-      <button className={`pillbtn ${has ? "btn-ghost" : "btn-lime"} btn-sm`} disabled={!!busy} onClick={() => generate(stage)}
-        title={has ? `Replaces stage ${stage} of the draft with a new OpenAI suggestion` : undefined}>
-        {busy === `gen${stage}` ? <><span className="spin" /> OpenAI is drafting…</> : has ? `Regenerate stage ${stage} with OpenAI` : `Generate stage ${stage} with OpenAI`}
-      </button>
-    );
-  };
+  const editingItem = crit.find((c) => c.id === editing) ?? null;
+  const closeEditor = useCallback(() => setEditing(null), []);
+
+  // Everything the approval would lock in: problems block it, bias flags need a look.
+  const enabled = crit.filter((c) => c.enabled);
+  const problems = enabled.filter((c) => c.kind === "rule" && c.rule).map((c) => ({ c, p: validateRule(c.rule!, questions) })).filter((x) => x.p);
+  const biasFlags = enabled.filter((c) => c.bias_flag);
+  const stage1Count = crit.filter((c) => c.stage === 1).length;
+  const stage2Count = stage2.length;
+  const impact = current
+    ? `Approving re-scores ${candidateCount} candidate${candidateCount === 1 ? "" : "s"} on stage 1. Unchanged AI checks are reused, so rule and stage-2 edits cost nothing.`
+    : candidateCount
+      ? `Approving starts scoring all ${candidateCount} applicant${candidateCount === 1 ? "" : "s"}.`
+      : "Approving starts scoring applicants as they arrive.";
+  const genLabel = (stage: 1 | 2) => `${(stage === 1 ? stage1Count : stage2Count) ? "Regenerate" : "Generate"} stage ${stage} from the job description`;
 
   return (
     <>
-      <div className="section-head">
-        <div>
-          <p className="eyebrow" style={{ margin: "0 0 8px" }}>{shown ? `Rubric v${shown.version}${editable ? " · draft" : ""}` : "Rubric"}</p>
-          <h2>How candidates are screened for this job</h2>
-          <p>
-            <b>Stage 1</b> screens every applicant on their form answers. You then move the people you want to <b>stage 2</b>, where OpenAI reviews their CV, portfolio and GitHub against the JD.
-            {shown && (shown.source === "recruiter" ? " Last edited by you." : ` Drafted by ${providerLabel(shown.source)}${shown.model ? ` (${shown.model})` : ""}.`)}
-          </p>
-        </div>
-        {!shown ? <span className="chip neutral">Not set up</span> : editable ? <span className="chip warn">Not approved</span> : <span className="chip good">Approved · in use</span>}
-      </div>
-
-      {editable && current && (
-        <div className="banner">
-          <div className="txt"><b>Candidates are still screened on v{current.version}.</b> Approving v{draft!.version} updates stage-1 results for all {candidateCount} candidates. Unchanged AI checks are reused, so filter and stage-2 edits cost nothing to apply.</div>
-          <button className="pillbtn btn-ghost btn-sm" disabled={!!busy} onClick={() => act("discard", () => discardDraft(job.id))}>Discard draft</button>
-        </div>
-      )}
-
-      <div className="seg" role="group" aria-label="Rubric stage">
-        <button aria-pressed={tab === 1} onClick={() => setTab(1)}>Stage 1 · Form screening</button>
-        <button aria-pressed={tab === 2} onClick={() => setTab(2)}>Stage 2 · CV, portfolio &amp; GitHub</button>
-      </div>
-
-      <div className="grid2" style={{ gridTemplateColumns: "minmax(0,1.6fr) minmax(0,1fr)" }}>
-        <div style={{ display: "grid", gap: 24, alignContent: "start" }}>
-          <div className="row" style={{ justifyContent: "space-between" }}>
-            <p className="hint" style={{ margin: 0, maxWidth: "52ch" }}>
-              {tab === 1
-                ? "Every applicant, automatically, as soon as they apply. One check per form question — exact, AI-checked, or (for open-ended answers) graded against an expected answer. Their points make up the stage-1 score you use to decide who moves on."
-                : "Only for candidates you move to stage 2. OpenAI judges each criterion from the JD plus their CV, portfolio, GitHub and form answers, and cites where each piece of evidence came from."}
-            </p>
-            {genButton(tab)}
-          </div>
-
-          {!editable && shown && (
-            <div className="note" style={{ margin: 0 }}>This version is approved and locked. Click <b>Edit</b> to change it — you&apos;ll get a new draft version.</div>
-          )}
-
-          {tab === 1 ? (
-            <>
-              <FormRulesEditor
-                jobId={job.id}
-                rows={of(1, "rule")}
-                editable={editable}
-                questions={questions}
-                scoreTotal={total1}
-                onPatch={(id, p) => patch(id, p as Partial<C>)}
-                onRemove={remove}
-                onAdd={(question) => {
-                  const rule = newRule(questions, question);
-                  add({ stage: 1, kind: "rule", name: rule.question || "New check", description: "", weight: defaultPoints(rule), rule });
-                }}
-              />
-              {of(1, "hard").length > 0 && (
-                <CriteriaList title="Other AI-judged filters" hint="Disqualify when not met — judged from the form answers" stage={1} kind="hard"
-                  rows={of(1, "hard")} editable={editable} total={total1} onPatch={patch} onRemove={remove} onAdd={add} />
-              )}
-              {of(1, "soft").length > 0 && (
-                <>
-                  <div className="note" style={{ margin: 0 }}>
-                    <b>Older-style criteria below.</b> Open-ended answers are now checked per question above (“AI compares with the expected answer”).
-                    {editable ? " Delete these once you've added a check for your open-ended question." : " Click Edit to replace them."}
-                  </div>
-                  <CriteriaList title="Older criteria on free-text answers" hint="Still used until you delete them" stage={1} kind="soft"
-                    rows={of(1, "soft")} editable={editable} total={total1} onPatch={patch} onRemove={remove} onAdd={add} hideAdd />
-                </>
-              )}
-            </>
-          ) : (
-            <>
-              <CriteriaList title="Must-haves" hint="Disqualify when not met — judged from the CV and work samples" stage={2} kind="hard"
-                rows={of(2, "hard")} editable={editable} total={total2} onPatch={patch} onRemove={remove} onAdd={add} />
-              <CriteriaList title="Scored criteria" hint="Make up the stage-2 suitability score" stage={2} kind="soft"
-                rows={of(2, "soft")} editable={editable} total={total2} onPatch={patch} onRemove={remove} onAdd={add} />
-              {!crit.some((c) => c.stage === 2) && (
-                <div className="note" style={{ margin: 0 }}>No stage-2 rubric yet. Until you create one, stage-2 reviews use the stage-1 criteria.</div>
-              )}
-            </>
-          )}
-        </div>
-
-        <div style={{ display: "grid", gap: 24, alignContent: "start" }}>
-          <div className="panel">
-            <h3 style={{ marginBottom: 14 }}>Settings</h3>
-            <div className="field">
-              <label className="f" htmlFor="thr">AI recheck threshold (stage 1) <span className="mono muted">{threshold.toFixed(2)}</span></label>
-              <input type="range" id="thr" min={0.5} max={0.95} step={0.05} value={threshold} style={{ width: "100%", accentColor: "var(--green)" }}
-                onChange={(e) => setThreshold(Number(e.target.value))}
-                onPointerUp={() => run(() => updateJobSettings(job.id, { recheck_threshold: threshold }))}
-                onKeyUp={() => run(() => updateJobSettings(job.id, { recheck_threshold: threshold }))} />
-              <p className="hint">Anything Jev judges below this confidence is rechecked by OpenAI.</p>
-            </div>
-            <div className="row" style={{ justifyContent: "space-between", flexWrap: "nowrap" }}>
-              <label className="f" htmlFor="signoff" style={{ margin: 0 }}>Require my sign-off before a new rubric is used</label>
-              <label className="switch"><input type="checkbox" id="signoff" defaultChecked={job.require_signoff} onChange={(e) => run(() => updateJobSettings(job.id, { require_signoff: e.target.checked }))} /><span /></label>
-            </div>
-          </div>
-
+      {/* Status + main actions, pinned while you scroll */}
+      <div className={`rubric-bar ${editable ? "is-draft" : ""}`}>
+        <div className="rb-status">
           {editable ? (
             <>
-              <div className="panel">
-                <h3 style={{ marginBottom: 8 }}>Bias review</h3>
-                <p className="hint" style={{ margin: "0 0 14px" }}>Check both stages: nothing should reward or penalise age, gender, religion, caste, marital status, disability, or anything that stands in for them (graduation year, photos, “culture fit”, a maximum on experience).</p>
-                <label className="row" style={{ flexWrap: "nowrap", alignItems: "flex-start", fontSize: 14 }}>
-                  <input type="checkbox" id="bias" checked={bias} onChange={(e) => setBias(e.target.checked)} style={{ marginTop: 3 }} />
-                  I&apos;ve reviewed both stages for proxies of protected characteristics.
-                </label>
-              </div>
+              <span className="chip warn"><span className="dot" /> Draft v{draft!.version} · not live</span>
+              <span className="muted">{dirty ? "Unsaved changes" : `${draft!.source === "recruiter" ? "Edited by you" : `Drafted by ${providerLabel(draft!.source)}`} · ${fmt(draft!.created_at)}`}</span>
+            </>
+          ) : shown ? (
+            <>
+              <span className="chip good"><Icon name="check" size={13} /> v{shown.version} live</span>
+              <span className="muted">Approved {fmt(shown.approved_at)}</span>
+            </>
+          ) : (
+            <span className="chip neutral">No rubric yet</span>
+          )}
+        </div>
+        <div className="row" style={{ gap: 8 }}>
+          {editable ? (
+            <>
               {dirty && (
-                <button className="pillbtn btn-ghost" disabled={!!busy} onClick={async () => { setBusy("save"); await persist(); setBusy(null); router.refresh(); }}>
+                <button className="pillbtn btn-ghost btn-sm" disabled={!!busy} onClick={() => step("save", async () => ({ ok: true, message: "Draft saved" }), true)}>
                   {busy === "save" ? <span className="spin" /> : "Save draft"}
                 </button>
               )}
-              <button className="pillbtn btn-lime" disabled={!!busy || !bias}
-                onClick={async () => {
-                  setBusy("approve");
-                  const saved = await persist();
-                  if (saved.ok) {
-                    const r = await run(() => approveRubric(draft!.id, bias));
-                    if (r.ok) router.refresh();
-                  }
-                  setBusy(null);
-                }}>
-                {busy === "approve" ? <span className="spin" /> : `Approve v${draft!.version}`}
+              <button className="pillbtn btn-ghost btn-sm" disabled={!!busy}
+                onClick={() => { if (window.confirm(`Discard draft v${draft!.version}? Your changes in it will be lost.`)) step("discard", () => discardDraft(job.id)); }}>
+                {busy === "discard" ? <span className="spin" /> : "Discard"}
               </button>
-              {!bias && <p className="hint" style={{ margin: 0 }}>Tick the bias review to approve.</p>}
+              <button className="pillbtn btn-lime btn-sm" disabled={!!busy} onClick={() => setApproving(true)}>Approve &amp; publish</button>
             </>
           ) : (
-            <div className="panel" style={{ display: "grid", gap: 10 }}>
-              <button className="pillbtn btn-dark" disabled={!!busy} onClick={() => act("edit", () => editRubric(job.id))}>
-                {busy === "edit" ? <span className="spin" /> : shown ? `Edit as v${shown.version + 1}` : "Start from scratch"}
-              </button>
-              <p className="hint" style={{ margin: 0 }}>
-                {shown ? "Creates a draft. Current results stay until you approve it." : "Or use “Generate … with OpenAI” to get a first draft of each stage."}
-              </p>
-            </div>
+            <button className="pillbtn btn-dark btn-sm" disabled={!!busy} onClick={() => step("edit", () => editRubric(job.id))}>
+              {busy === "edit" ? <span className="spin" /> : shown ? "Edit rubric" : "Start from scratch"}
+            </button>
           )}
         </div>
+        {editable && <p className="rb-impact">{impact}</p>}
       </div>
+
+      <div className="stage-tabs" role="tablist" aria-label="Rubric stage">
+        {([1, 2] as const).map((s) => {
+          const n = s === 1 ? stage1Count : stage2Count;
+          return (
+            <button key={s} role="tab" aria-selected={tab === s} onClick={() => setTab(s)}>
+              <span className="st-num">{s}</span>
+              <span className="st-txt">
+                <b>{s === 1 ? "Form screening" : "CV, portfolio & GitHub"}</b>
+                <span>
+                  {s === 1 ? "Every applicant · automatic" : "People you move on"} ·{" "}
+                  {!n ? "not set up" : s === 1 ? `${n} rule${n === 1 ? "" : "s"}` : `${n} ${n === 1 ? "criterion" : "criteria"}`}
+                </span>
+              </span>
+              {!n && <span className="st-warn" title="Nothing set up yet"><Icon name="alert" size={14} /></span>}
+            </button>
+          );
+        })}
+      </div>
+
+      {tab === 1 && (
+        <div className="rubric-settings">
+          <div className="rs-item">
+            <label className="f" htmlFor="thr" style={{ margin: 0 }}>AI recheck threshold <span className="mono">{threshold.toFixed(2)}</span></label>
+            <input type="range" id="thr" min={0.5} max={0.95} step={0.05} value={threshold}
+              onChange={(e) => setThreshold(Number(e.target.value))}
+              onPointerUp={() => run(() => updateJobSettings(job.id, { recheck_threshold: threshold }))}
+              onKeyUp={() => run(() => updateJobSettings(job.id, { recheck_threshold: threshold }))} />
+            <p className="hint" style={{ margin: 0 }}>
+              When Jev is less than {threshold.toFixed(2)} sure about an AI judgement, OpenAI decides it instead, and the candidate is flagged for your review.
+              Higher = more OpenAI calls and more flags; lower = cheaper, fewer flags.
+            </p>
+          </div>
+          <label className="rs-item rs-toggle" htmlFor="signoff">
+            <span><b>Require my sign-off</b><span className="hint" style={{ display: "block", margin: 0 }}>A new rubric is used only after you approve it.</span></span>
+            <span className="switch"><input type="checkbox" id="signoff" defaultChecked={job.require_signoff} onChange={(e) => run(() => updateJobSettings(job.id, { require_signoff: e.target.checked }))} /><span /></span>
+          </label>
+        </div>
+      )}
+
+      <section className="rubric-section">
+        <div className="rs-head">
+          <div>
+            <h2>{tab === 1 ? <>Form screening rules <span className="muted">({rules.length})</span></> : <>CV review criteria <span className="muted">({stage2.length})</span></>}</h2>
+            <p>
+              {tab === 1
+                ? `One rule per form question. Exact checks run in code; free text gets an AI check; open-ended answers are graded against an expected answer. Rules that pass earn their share of the stage-1 score. Blank or unclear answers are flagged, never rejected.`
+                : `Only for candidates you move to stage 2. ${providerLabel("openai")} judges each criterion from the job description plus their CV, portfolio, GitHub and form answers, citing where the evidence came from.`}
+            </p>
+          </div>
+          {editable ? (
+            <Menu
+              label={tab === 1 ? "Add rule" : "Add criterion"}
+              className="pillbtn btn-dark btn-sm btn-icon"
+              busy={busy === `gen${tab}`}
+              trigger={<><Icon name="plus" size={15} /> {tab === 1 ? "Add rule" : "Add criterion"} <span aria-hidden="true">▾</span></>}
+              items={tab === 1
+                ? [
+                    { label: "Add a rule", onSelect: () => addRule(), disabled: !questions.length, hint: !questions.length ? "Add form questions in Job setup first" : undefined },
+                    { label: genLabel(1), onSelect: () => { if (!stage1Count || window.confirm("Replace stage 1 of this draft with a new suggestion?")) generate(1); } },
+                  ]
+                : [
+                    { label: "Add a must-have", onSelect: () => addCriterion("hard") },
+                    { label: "Add a scored criterion", onSelect: () => addCriterion("soft") },
+                    { label: genLabel(2), onSelect: () => { if (!stage2Count || window.confirm("Replace stage 2 of this draft with a new suggestion?")) generate(2); } },
+                  ]}
+            />
+          ) : shown ? null : (
+            <button className="pillbtn btn-lime btn-sm" disabled={!!busy} onClick={() => generate(tab)}>
+              {busy === `gen${tab}` ? <><span className="spin" /> Drafting…</> : genLabel(tab)}
+            </button>
+          )}
+        </div>
+        {busy === `gen${tab}` && <div className="status-box" style={{ margin: "0 0 12px" }}><span><span className="spin" /> OpenAI is drafting stage {tab} from the job description…</span></div>}
+
+        {tab === 1 ? (
+          <>
+            <RulesTable rows={rules} questions={questions} total={total1} editable={editable} onOpen={setEditing}
+              onToggle={(id, on) => patch(id, { enabled: on })} onAddFor={addRule} />
+            {legacy1.length > 0 && (
+              <div style={{ marginTop: 22 }}>
+                <h3 style={{ marginBottom: 4 }}>Older-style criteria</h3>
+                <p className="hint" style={{ margin: "0 0 10px" }}>Still used until you delete them. Open-ended answers are now graded per question above (“AI-graded answer”).</p>
+                <CriteriaTable rows={legacy1} total={total1} editable={editable} onOpen={setEditing} onToggle={(id, on) => patch(id, { enabled: on })} empty="" />
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <CriteriaTable rows={stage2} total={total2} editable={editable} onOpen={setEditing} onToggle={(id, on) => patch(id, { enabled: on })}
+              empty={editable ? "No criteria yet. Generate them from the job description, or add them by hand." : "No stage-2 criteria yet."} />
+            {!stage2.length && <p className="hint">Until stage 2 is set up, CV reviews use the stage-1 criteria.</p>}
+          </>
+        )}
+      </section>
+
+      {editingItem && (
+        <EditPanel item={editingItem} jobId={job.id} questions={questions} total={editingItem.stage === 1 ? total1 : total2} editable={editable}
+          onPatch={(p) => patch(editingItem.id, p)} onRemove={() => remove(editingItem.id)} onClose={closeEditor} />
+      )}
+
+      {approving && draft && (
+        <div className="scrim center" onMouseDown={(e) => e.target === e.currentTarget && setApproving(false)}>
+          <ApproveDialog
+            version={draft.version}
+            impact={impact}
+            problems={problems.map(({ c, p }) => `${c.name}: ${p}`)}
+            biasFlags={biasFlags.map((c) => ({ name: c.name, stage: c.stage, flag: c.bias_flag! }))}
+            busy={busy === "approve"}
+            onCancel={() => setApproving(false)}
+            onApprove={async () => {
+              const r = await step("approve", () => approveRubric(draft.id, true), true);
+              if (r.ok) setApproving(false);
+            }}
+          />
+        </div>
+      )}
     </>
   );
 }
 
-function CriteriaList({ title, hint, stage, kind, rows, editable, total, onPatch, onRemove, onAdd, hideAdd }: {
-  hideAdd?: boolean;
-  title: string;
-  hint: string;
-  stage: 1 | 2;
-  kind: "hard" | "soft";
-  rows: C[];
-  editable: boolean;
-  total: number;
-  onPatch: (id: string, p: Partial<C>) => void;
-  onRemove: (id: string) => void;
-  onAdd: (c: Omit<C, "id" | "isNew" | "enabled" | "source_constraint" | "bias_flag">) => void;
+/** Approval with the bias review built in: specific flags first, then the required confirmation. */
+function ApproveDialog({ version, impact, problems, biasFlags, busy, onCancel, onApprove }: {
+  version: number;
+  impact: string;
+  problems: string[];
+  biasFlags: { name: string; stage: 1 | 2; flag: string }[];
+  busy: boolean;
+  onCancel: () => void;
+  onApprove: () => void;
 }) {
+  const [checked, setChecked] = useState(false);
   return (
-    <div className="panel">
-      <div className="section-head" style={{ marginBottom: 6 }}>
-        <h3>{title}</h3>
-        <span className="muted" style={{ fontSize: 13 }}>{kind === "soft" ? `weights total ${total} · shown as share of 100` : hint}</span>
-      </div>
-      {kind === "soft" && <p className="hint" style={{ margin: "0 0 6px" }}>{hint}</p>}
-      {rows.length === 0 && <p className="muted" style={{ fontSize: 14 }}>None yet.</p>}
-      {rows.map((c) => (
-        <div className="crit" key={c.id} style={{ opacity: c.enabled ? 1 : 0.5, gridTemplateColumns: kind === "soft" ? undefined : "1fr auto" }}>
-          <div>
-            <input className="name" type="text" id={`cn-${c.id}`} value={c.name} disabled={!editable} onChange={(e) => onPatch(c.id, { name: e.target.value })} aria-label={kind === "soft" ? "Criterion name" : "Must-have name"} />
-            {editable ? (
-              <textarea rows={2} id={`cd-${c.id}`} value={c.description} onChange={(e) => onPatch(c.id, { description: e.target.value })}
-                aria-label={kind === "soft" ? "What meets looks like" : "How to tell it's met"} style={{ fontSize: 13, marginTop: 4 }} />
-            ) : (
-              <p className="desc">{c.description}</p>
-            )}
-            {c.source_constraint && <div className="src" style={{ fontSize: 12.5, color: "var(--muted)" }}>From your constraint: “{c.source_constraint}”</div>}
-            {c.bias_flag && <div className="flag">⚑ {c.bias_flag}</div>}
-          </div>
-          {kind === "soft" && (
-            <div className="wt">
-              <input type="range" min={0} max={50} step={5} value={c.weight} disabled={!editable} onChange={(e) => onPatch(c.id, { weight: Number(e.target.value) })} aria-label={`Weight for ${c.name}`} />
-              <span className="mono">{total && c.enabled ? Math.round((c.weight / total) * 100) : 0}%</span>
-            </div>
-          )}
-          <div className="row" style={{ gap: 6 }}>
-            {editable ? (
-              <>
-                <label className="req"><input type="checkbox" checked={c.enabled} onChange={(e) => onPatch(c.id, { enabled: e.target.checked })} /> Use</label>
-                <button className="iconbtn" aria-label={`Delete ${c.name}`} onClick={() => onRemove(c.id)}>✕</button>
-              </>
-            ) : !c.enabled ? <span className="muted" style={{ fontSize: 13 }}>Not used</span> : null}
-          </div>
+    <div className="modal" role="dialog" aria-modal="true" aria-labelledby="approve-h">
+      <h2 id="approve-h" style={{ marginBottom: 6 }}>Approve rubric v{version}</h2>
+      <p className="hint" style={{ margin: "0 0 16px" }}>{impact}</p>
+
+      {problems.length > 0 && (
+        <div className="banner" style={{ background: "var(--bad-soft)" }}>
+          <div className="txt"><b>Fix these first:</b><ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>{problems.map((p) => <li key={p}>{p}</li>)}</ul></div>
         </div>
-      ))}
-      {editable && !hideAdd && (
-        <button className="pillbtn btn-ghost btn-sm" style={{ marginTop: 12 }} onClick={() =>
-          onAdd({
-            stage, kind, weight: kind === "soft" ? 10 : 0, rule: null,
-            name: kind === "soft" ? "New criterion" : "New must-have",
-            description: stage === 1 ? "What a strong answer looks like in the form." : "What to look for in the CV, portfolio or GitHub.",
-          })}>
-          + Add {kind === "soft" ? "criterion" : "must-have"}
-        </button>
       )}
+
+      <h3 style={{ marginBottom: 8 }}>Bias review <span className="chip warn" style={{ marginLeft: 6 }}>Required</span></h3>
+      {biasFlags.length ? (
+        <div className="bias-list">
+          <p className="hint" style={{ margin: "0 0 8px" }}>The AI marked {biasFlags.length === 1 ? "this item" : `these ${biasFlags.length} items`} as possible bias risks. Keep each only if it&apos;s truly needed for the job:</p>
+          {biasFlags.map((b) => (
+            <div key={b.name} className="bias-item"><div><b>⚑ {b.name}</b> <span className="muted">· stage {b.stage}</span></div><span>{b.flag}</span></div>
+          ))}
+        </div>
+      ) : (
+        <p className="hint" style={{ margin: "0 0 8px" }}>No items were marked as bias risks, but check both stages yourself.</p>
+      )}
+      <p className="hint" style={{ margin: "8px 0 12px" }}>
+        Nothing should reward or penalise age, gender, religion, caste, marital status or disability, or anything that stands in for them:
+        graduation year, photos, “culture fit”, native speaker, or a maximum on years of experience.
+      </p>
+      <label className="row" style={{ flexWrap: "nowrap", alignItems: "flex-start", fontSize: 14, gap: 10 }}>
+        <input type="checkbox" checked={checked} onChange={(e) => setChecked(e.target.checked)} style={{ marginTop: 3 }} />
+        I&apos;ve reviewed both stages for proxies of protected characteristics.
+      </label>
+
+      <div className="row" style={{ justifyContent: "flex-end", marginTop: 20 }}>
+        <button className="pillbtn btn-ghost btn-sm" onClick={onCancel}>Cancel</button>
+        <button className="pillbtn btn-lime btn-sm" disabled={!checked || busy || problems.length > 0} onClick={onApprove}>
+          {busy ? <span className="spin" /> : `Approve & publish v${version}`}
+        </button>
+      </div>
     </div>
   );
 }

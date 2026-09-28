@@ -39,9 +39,14 @@ export default async function RubricPage({ params, searchParams }: PageProps<"/j
       )}
 
       {all.length > 0 && (
-        <section style={{ marginTop: 40 }}>
-          <h3 style={{ marginBottom: 6 }}>Version history</h3>
-          <p className="hint" style={{ margin: "0 0 12px" }}>Every rubric version is kept, so any past score can be traced to the criteria that produced it.</p>
+        <details className="versions-box" open={!!viewingOld}>
+          <summary>
+            <b>Version history</b>
+            <span className="muted">{all.length} version{all.length === 1 ? "" : "s"} · latest v{all[0].version} ({all[0].status === "approved" ? "live" : all[0].status === "draft" ? "draft" : "superseded"})</span>
+            <span className="spacer" />
+            <span className="muted" aria-hidden="true">▾</span>
+          </summary>
+          <p className="hint" style={{ margin: "10px 0 12px" }}>Every rubric version is kept, so any past score can be traced to the criteria that produced it.</p>
           <div className="versions">
             {all.map((r) => {
               const isShown = viewingOld ? r.id === viewingOld.id : r.id === (draft ?? current)?.id;
@@ -60,7 +65,7 @@ export default async function RubricPage({ params, searchParams }: PageProps<"/j
               );
             })}
           </div>
-        </section>
+        </details>
       )}
     </>
   );

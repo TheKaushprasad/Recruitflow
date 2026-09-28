@@ -214,6 +214,12 @@ export async function saveDraft(rubricId: string, patches: { id: string; patch: 
   for (const { id, patch } of patches) {
     const { error } = await supabase.from("rubric_criteria").update(pick(patch)).eq("id", id).eq("rubric_id", rubricId);
     if (error) return fail(error);
+    // A criterion can switch between must-have and scored; form rules keep their kind.
+    if (patch.kind === "hard" || patch.kind === "soft") {
+      const { error: kErr } = await supabase.from("rubric_criteria").update({ kind: patch.kind })
+        .eq("id", id).eq("rubric_id", rubricId).in("kind", ["hard", "soft"]);
+      if (kErr) return fail(kErr);
+    }
   }
   if (removed.length) await supabase.from("rubric_criteria").delete().in("id", removed).eq("rubric_id", rubricId);
   if (added.length) {

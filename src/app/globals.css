@@ -114,7 +114,7 @@ textarea{resize:vertical;line-height:1.5}
 .banner.ok{background:var(--good-soft)}
 .progress{height:6px;background:var(--line);border-radius:99px;overflow:hidden;margin-top:8px}
 .progress i{display:block;height:100%;background:var(--green);width:0;transition:width .2s}
-.switch{position:relative;width:38px;height:22px;flex:none}
+.switch{position:relative;display:inline-block;vertical-align:middle;width:38px;height:22px;flex:none}
 .switch input{opacity:0;width:100%;height:100%;margin:0;position:absolute;cursor:pointer;z-index:1}
 .switch span{position:absolute;inset:0;background:var(--line);border-radius:99px;transition:.2s}
 .switch span::after{content:"";position:absolute;width:16px;height:16px;left:3px;top:3px;background:var(--surface);border-radius:50%;transition:.2s;box-shadow:0 1px 2px rgba(0,0,0,.2)}
@@ -539,4 +539,71 @@ th[aria-sort] .sort-ind{opacity:1;color:var(--green-ink)}
   .top-act{grid-column:2/-1;justify-self:start}
   .funnel-bar{grid-template-columns:1fr 1fr}
   .funnel-bar a,.funnel-bar li:first-child a,.funnel-bar li:last-child a{clip-path:none;border-radius:12px;padding-left:16px}
+}
+
+/* ---- rubric ---- */
+.chip.sky{background:#dbeafb;color:#1d4f86}
+.rubric-bar{position:sticky;top:var(--sticky-top);z-index:12;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 16px;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:12px 14px 12px 16px;margin-bottom:18px;box-shadow:0 8px 20px -18px rgba(20,50,35,.5)}
+.rubric-bar.is-draft{border-color:color-mix(in srgb,var(--warn) 45%,var(--line));background:color-mix(in srgb,var(--warn-soft) 55%,var(--surface))}
+.rb-status{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:13px}
+.rb-status .dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+.rb-impact{flex-basis:100%;margin:0;font-size:12.5px;color:var(--muted)}
+.stage-tabs{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}
+.stage-tabs button{display:flex;gap:12px;align-items:center;text-align:left;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:12px 14px;cursor:pointer;color:var(--ink)}
+.stage-tabs button:hover{border-color:var(--muted)}
+.stage-tabs button[aria-selected="true"]{border-color:var(--green);box-shadow:inset 0 0 0 1px var(--green);background:color-mix(in srgb,var(--mint) 30%,var(--surface))}
+.st-num{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;flex:none;background:var(--surface-2);font-weight:700;font-size:13px}
+.stage-tabs button[aria-selected="true"] .st-num{background:var(--green);color:var(--on-green)}
+.st-txt{display:grid;min-width:0;line-height:1.35}
+.st-txt b{font-size:14.5px}
+.st-txt span{font-size:12.5px;color:var(--muted)}
+.st-warn{margin-left:auto;color:var(--warn)}
+.rubric-settings{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:10px;margin-bottom:16px}
+.rs-item{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:12px 14px;display:grid;gap:6px;align-content:start}
+.rs-item input[type=range]{width:100%;accent-color:var(--green)}
+.rs-toggle{display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;font-size:14px}
+.rubric-section{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:18px}
+.rs-head{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap;margin-bottom:14px}
+.rs-head h2{font-size:19px;margin:0 0 4px}
+.rs-head p{margin:0;font-size:13px;color:var(--muted);max-width:78ch}
+.rtable-wrap{border:1px solid var(--line);border-radius:12px;overflow-x:clip}
+.rtable{width:100%;min-width:0;table-layout:fixed;border-collapse:separate;border-spacing:0}
+.rtable .w-on{width:54px} .rtable .w-type{width:150px} .rtable .w-act{width:136px} .rtable .w-share{width:70px} .rtable .w-go{width:30px}
+.rtable th{background:var(--surface-2);font-size:11px;padding:9px 10px}
+.rtable td{padding:11px 10px;font-size:13.5px;vertical-align:middle}
+.rtable .num{text-align:right}
+.rtable tbody tr{cursor:pointer}
+.rtable tr.off td{opacity:.5}
+.rtable tr.off td:first-child{opacity:1}
+.rt-name{display:block;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rt-sub{display:block;font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rt-cond{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:12.5px;color:var(--muted)}
+.rt-go{color:var(--muted);font-size:18px}
+.bias-mark{color:var(--warn);cursor:help}
+.switch.sm{width:32px;height:18px}
+.switch.sm span::after{width:12px;height:12px}
+.switch.sm input:checked+span::after{transform:translateX(14px)}
+.rtable .empty-row td{text-align:center;color:var(--muted);padding:28px 16px;cursor:default}
+.unchecked{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;margin-top:12px;font-size:13px}
+.bias-list{display:grid;gap:8px}
+.bias-item{display:grid;gap:2px;background:var(--warn-soft);border-radius:10px;padding:10px 12px;font-size:13.5px}
+.bias-item span:last-child{color:var(--ink);font-size:13px}
+.versions-box{margin-top:28px;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:12px 16px}
+.versions-box summary{display:flex;gap:12px;align-items:center;cursor:pointer;list-style:none;font-size:14px}
+.versions-box summary::-webkit-details-marker{display:none}
+.versions-box[open] summary [aria-hidden]{transform:rotate(180deg)}
+@container (max-width:760px){
+  .stage-tabs,.rubric-settings{grid-template-columns:1fr}
+  .rb-impact{display:none}
+  .rtable colgroup,.rtable thead{display:none}
+  .rtable,.rtable tbody{display:block}
+  .rtable tbody tr{display:grid;grid-template-columns:44px minmax(0,1fr) 20px;gap:6px 8px;padding:12px 10px;border-bottom:1px solid var(--line)}
+  .rtable tbody tr:last-child{border-bottom:0}
+  .rtable td{display:block;padding:0;border:0}
+  .rtable td:nth-child(1){grid-row:1/4}
+  .rtable td:nth-child(2){grid-column:2}
+  .rtable td:last-child{grid-column:3;grid-row:1}
+  .rtable td:not(:nth-child(1)):not(:nth-child(2)):not(:last-child){grid-column:2}
+  .rtable td.num{text-align:left}
+  .rtable tbody tr.empty-row{display:block}
 }
