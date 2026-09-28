@@ -33,7 +33,7 @@ export default async function JobLayout({ children, params }: LayoutProps<"/jobs
   const next =
     job.status === "closed" ? { label: "View candidates", href: `${base}/candidates` }
     : !job.description.trim() ? { label: "Add job description", href: `${base}/setup` }
-    : !hasForm ? { label: "Set up the form", href: `${base}/setup` }
+    : !hasForm && !user.isGuest ? { label: "Set up the form", href: `${base}/setup` }
     : !job.current_rubric_id ? { label: draft ? "Approve the rubric" : "Create the rubric", href: `${base}/rubric` }
     : flagged ? { label: `Review ${flagged} flagged`, href: `${base}/candidates?f=review` }
     : applicants ? { label: "Review candidates", href: `${base}/candidates` }

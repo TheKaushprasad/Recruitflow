@@ -10,6 +10,7 @@ import { Icon } from "@/components/Icon";
 import { Menu, type MenuItem } from "@/components/Menu";
 import { SendEmailModal } from "@/components/SendEmailModal";
 import { SyncStatus } from "@/components/SyncStatus";
+import { TestApplication, type ApplyQuestion } from "@/components/TestApplication";
 import { useLiveRefresh } from "@/components/useLiveRefresh";
 import { moveToStage2, startDeepEvaluation } from "@/app/actions/deep";
 import { moveCandidates, exportResults } from "@/app/actions/pipeline";
@@ -50,6 +51,8 @@ export function CandidatesTable(props: {
   initialFilter: string;
   openId: string | null;
   aiName: string;
+  /** Guest demo: questions for "Submit a test application". */
+  demo?: { questions: ApplyQuestion[]; autoOpen: boolean } | null;
 }) {
   const { job, candidates, stages } = props;
   const router = useRouter();
@@ -136,7 +139,8 @@ export function CandidatesTable(props: {
   // Live updates: new responses, stage-1 scores and CV reviews appear without a reload.
   const anyScoring = candidates.some((c) => c.score_status === "scoring");
   const anyRunning = candidates.some((c) => deepRunning(c.deep));
-  useLiveRefresh(job.id, anyScoring || anyRunning);
+  const anyWaiting = !!props.currentVersion && job.status === "open" && candidates.some((c) => !c.evaluation && c.score_status === "pending");
+  useLiveRefresh(job.id, anyScoring || anyRunning, anyWaiting);
 
   const done = () => { setSel(new Set()); router.refresh(); };
   const toStage2 = async (ids: string[]) => { const r = await run(() => moveToStage2(job.id, ids)); if (r.ok) done(); };
@@ -213,6 +217,7 @@ export function CandidatesTable(props: {
           <p className="page-sub" style={{ marginTop: 6 }}>Stage 2 candidates first, then the newest applications. Click anyone to see the full evaluation.</p>
         </div>
         <div className="row" style={{ gap: 8 }}>
+          {props.demo && job.status === "open" && <TestApplication jobId={job.id} questions={props.demo.questions} autoOpen={props.demo.autoOpen} />}
           {job.status === "open" && (job.google_form_id || job.sheet_id) && (
             <SyncStatus jobId={job.id} lastSyncedAt={job.last_synced_at} error={job.last_sync_error} />
           )}

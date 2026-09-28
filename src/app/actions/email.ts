@@ -3,6 +3,7 @@
 import { errorMessage } from "@/lib/errors";
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/supabase/server";
+import { GUEST_GOOGLE_MSG } from "@/lib/guest";
 import { googleFor } from "@/lib/google/auth";
 import { sendEmail } from "@/lib/google/gmail";
 import { fillTemplate, unfilled } from "@/lib/placeholders";
@@ -33,6 +34,7 @@ export async function deleteTemplate(id: string): Promise<ActionResult> {
 export async function sendTemplated(jobId: string, templateId: string, candidateIds: string[]): Promise<ActionResult> {
   try {
     const { supabase, user } = await requireUser();
+    if (user.isGuest) return { ok: false, error: GUEST_GOOGLE_MSG };
     if (!candidateIds.length) return { ok: false, error: "Select at least one candidate." };
     if (candidateIds.length > 50) return { ok: false, error: "Send to 50 or fewer candidates at a time." };
     const { data: tpl } = await supabase.from("email_templates").select("*").eq("id", templateId).single<EmailTemplate>();

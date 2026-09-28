@@ -16,7 +16,7 @@ const TOP_N = 5;
 
 export default async function JobOverview({ params }: PageProps<"/jobs/[id]">) {
   const { id } = await params;
-  const { supabase } = await requireUser();
+  const { supabase, user } = await requireUser();
   const job = await getJob(supabase, id);
   const [cands, rubrics, interviews, stages, related] = await Promise.all([
     getCandidates(supabase, job),
@@ -83,7 +83,9 @@ export default async function JobOverview({ params }: PageProps<"/jobs/[id]">) {
 
   const setup: { done: boolean; label: string; detail: string; href: string }[] = [
     { done: !!job.description.trim(), label: "Job description", detail: job.description.trim() ? "Added" : `${ai} builds the rubric from it`, href: `${base}/setup` },
-    { done: hasForm, label: "Application form", detail: hasForm ? (job.form_source === "linked" ? "Linked Google Form" : "Google Form live") : "Build or link one", href: `${base}/setup` },
+    user.isGuest
+      ? { done: true, label: "Application form", detail: "Sample form (demo — no Google Form)", href: `${base}/setup` }
+      : { done: hasForm, label: "Application form", detail: hasForm ? (job.form_source === "linked" ? "Linked Google Form" : "Google Form live") : "Build or link one", href: `${base}/setup` },
     {
       done: !!rubrics.current, label: "Rubric", href: `${base}/rubric`,
       detail: rubrics.current

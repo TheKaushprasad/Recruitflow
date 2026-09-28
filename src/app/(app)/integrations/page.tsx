@@ -16,6 +16,7 @@ const usd = (n: number) => (n > 0 && n < 0.01 ? "< $0.01" : `$${n.toFixed(2)}`);
 interface UsageRow { purpose: string; provider: string; model: string; calls: number; input_tokens: number; output_tokens: number; cost_usd: number | null; estimated: boolean }
 
 const MESSAGES: Record<string, [string, "ok" | "bad"]> = {
+  guest: ["Connecting Google isn't available in the demo. Create a free account to use your own Forms, Gmail and Calendar.", "bad"],
   connected: ["Google connected. Forms, Sheets, Gmail and Calendar are ready.", "ok"],
   denied: ["You declined access on Google's screen, so nothing was connected.", "bad"],
   state: ["The connection request expired or didn't match. Try connecting again.", "bad"],
@@ -65,7 +66,9 @@ export default async function IntegrationsPage({ searchParams }: PageProps<"/int
             <h3>Google account</h3>
             <p style={{ fontSize: 14 }}>{conn ? <>Connected as <b>{conn.google_email}</b></> : "Not connected"}</p>
           </div>
-          {conn ? <DisconnectGoogle /> : <a className="pillbtn btn-lime" href="/auth/google/connect" style={{ textDecoration: "none" }}>Connect Google</a>}
+          {conn ? <DisconnectGoogle /> : user.isGuest
+            ? <span className="chip neutral" title="Guest workspaces can't connect Google">Not available in the demo</span>
+            : <a className="pillbtn btn-lime" href="/auth/google/connect" style={{ textDecoration: "none" }}>Connect Google</a>}
         </div>
       </div>
 

@@ -21,6 +21,9 @@ export async function budgetFor(db: SupabaseClient, recruiterId: string): Promis
 
 /** Recruiters who have hit their monthly budget; the worker skips their queue until next month. */
 export async function recruitersOverBudget(db: SupabaseClient): Promise<string[]> {
+  const { data: ids, error } = await db.rpc("recruiters_over_budget", { p_since: monthStart() });
+  if (!error) return ((ids ?? []) as (string | { recruiters_over_budget: string })[]).map((r) => (typeof r === "string" ? r : r.recruiters_over_budget));
+  // Before migration 0010: check one by one.
   const { data } = await db.from("recruiter_settings").select("recruiter_id").not("monthly_ai_budget_usd", "is", null);
   const over: string[] = [];
   for (const r of data ?? []) {

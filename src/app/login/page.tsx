@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
+import { DemoButton } from "@/components/DemoButton";
 import { createClient } from "@/lib/supabase/client";
 
 export default function LoginPage() {
@@ -29,9 +31,9 @@ export default function LoginPage() {
   return (
     <div className="center-page">
       <div className="auth-card">
-        <p className="logo" style={{ marginBottom: 28 }}>
+        <Link className="logo" href="/" style={{ marginBottom: 28, display: "inline-block" }}>
           req<span>root</span>
-        </p>
+        </Link>
         <h1 className="hero" style={{ fontSize: 44 }}>Move the right people forward.</h1>
         {state === "sent" ? (
           <div className="panel">
@@ -52,6 +54,10 @@ export default function LoginPage() {
             {error && <p className="error-text">{error}</p>}
           </div>
         )}
+        <div className="login-demo">
+          <span className="muted">Just looking?</span>
+          <DemoButton label="Try the live demo — no sign-up" className="pillbtn btn-ghost btn-sm" />
+        </div>
       </div>
     </div>
   );

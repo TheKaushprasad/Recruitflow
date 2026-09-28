@@ -4,6 +4,7 @@ import { errorMessage } from "@/lib/errors";
 import { after } from "next/server";
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/supabase/server";
+import { guestAiBlocked } from "@/lib/guest";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { draftExpectedAnswer, draftStage1, draftStage2 } from "@/lib/ai/llm";
 import { workStage1 } from "@/lib/worker";
@@ -77,7 +78,8 @@ async function ensureDraft(db: Db, job: Job, source: "openai" | "recruiter", mod
  */
 export async function generateStage(jobId: string, stage: 1 | 2): Promise<ActionResult> {
   try {
-    const { supabase } = await requireUser();
+    const { supabase, user } = await requireUser();
+    if (user.isGuest) { const why = await guestAiBlocked(); if (why) return { ok: false, error: why }; }
     const { data: job } = await supabase.from("jobs").select("*").eq("id", jobId).single<Job>();
     if (!job) return { ok: false, error: "Job not found." };
     if (job.description.trim().length < 80) return { ok: false, error: "Add a fuller job description in Job setup first — OpenAI needs the responsibilities and requirements." };
@@ -135,6 +137,7 @@ export async function generateStage(jobId: string, stage: 1 | 2): Promise<Action
 export async function generateExpectedAnswer(jobId: string, question: string): Promise<ActionResult & { answer?: string }> {
   try {
     const { supabase, user } = await requireUser();
+    if (user.isGuest) { const why = await guestAiBlocked(); if (why) return { ok: false, error: why }; }
     const { data: job } = await supabase.from("jobs").select("title, description").eq("id", jobId).single();
     if (!job) return { ok: false, error: "Job not found." };
     if (job.description.trim().length < 80) return { ok: false, error: "Add a fuller job description in Job setup first — the expected answer is based on it." };
@@ -285,6 +288,7 @@ export async function retryScoring(candidateIds: string[]): Promise<ActionResult
 export async function explainScores(candidateId: string): Promise<ActionResult> {
   try {
     const { supabase, user } = await requireUser();
+    if (user.isGuest) { const why = await guestAiBlocked(); if (why) return { ok: false, error: why }; }
     const { data: cand } = await supabase.from("candidates").select("*").eq("id", candidateId).single<Candidate>();
     if (!cand) return { ok: false, error: "Candidate not found." };
     const { data: job } = await supabase.from("jobs").select("*").eq("id", cand.job_id).single<Job>();

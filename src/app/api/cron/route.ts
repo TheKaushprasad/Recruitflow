@@ -21,7 +21,7 @@ export async function GET(req: NextRequest) {
   // Reply straight away (the scheduler's HTTP call has a short timeout) and keep working after it.
   after(async () => {
     const result = await runWorker(createAdminClient());
-    if (result.added || result.scored || result.failed || result.stage2) console.log("worker", result);
+    if (result.added || result.scored || result.failed || result.stage2 || result.expiredGuests) console.log("worker", result);
   });
   return NextResponse.json({ started: true }, { status: 202 });
 }

@@ -25,7 +25,8 @@ export async function proxy(request: NextRequest) {
   // avoiding a round trip to Supabase Auth on every request.
   const { data } = await supabase.auth.getClaims();
   const path = request.nextUrl.pathname;
-  if (!data?.claims?.sub && !PUBLIC.some((p) => path.startsWith(p))) {
+  // The landing page ("/") is public; everything else needs a session (a guest demo counts).
+  if (!data?.claims?.sub && path !== "/" && !PUBLIC.some((p) => path.startsWith(p))) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.search = "";

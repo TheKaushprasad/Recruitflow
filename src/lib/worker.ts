@@ -4,6 +4,7 @@ import { withUsage } from "./ai/usage";
 import { recruitersOverBudget } from "./budget";
 import { runDeepEvaluation } from "./deep";
 import { errorMessage } from "./errors";
+import { GUEST } from "./guest";
 import { syncJob } from "./pipeline";
 import { MAX_ATTEMPTS, isPermanentError, retryDelayMs } from "./retry";
 import { scoreCandidate } from "./scoring";
@@ -135,7 +136,8 @@ export async function syncDueJobs(db: SupabaseClient, deadline: number, staleMs 
 /** One scheduler tick: sync due jobs, then work both queues side by side until the deadline. */
 export async function runWorker(db: SupabaseClient, budgetMs = 250_000) {
   const deadline = Date.now() + budgetMs;
+  const { data: expiredGuests } = await db.rpc("delete_expired_guests", { p_hours: GUEST.lifetimeHours });
   const sync = await syncDueJobs(db, deadline);
   const [stage1, stage2] = await Promise.all([workStage1(db, { deadline }), workStage2(db, { deadline })]);
-  return { ...sync, ...stage1, stage2: stage2.done };
+  return { ...sync, ...stage1, stage2: stage2.done, expiredGuests: Number(expiredGuests ?? 0) };
 }

@@ -3,6 +3,7 @@
 import { errorMessage } from "@/lib/errors";
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/supabase/server";
+import { GUEST_GOOGLE_MSG } from "@/lib/guest";
 import { googleFor } from "@/lib/google/auth";
 import { busyTimes, createInterviewEvent, deleteEvent } from "@/lib/google/calendar";
 import { createSpreadsheet, writeResultsTab } from "@/lib/google/sheets";
@@ -64,6 +65,7 @@ export async function saveStages(jobId: string, stages: Pick<Stage, "id" | "name
 export async function getBusy(dateIso: string): Promise<{ ok: true; busy: { start: string; end: string }[] } | { ok: false; error: string }> {
   try {
     const { user } = await requireUser();
+    if (user.isGuest) return { ok: false, error: GUEST_GOOGLE_MSG };
     const { auth } = await googleFor(user.id);
     const day = new Date(dateIso);
     const end = new Date(day.getTime() + 24 * 3600_000);
@@ -83,6 +85,7 @@ export async function scheduleInterview(input: {
 }): Promise<ActionResult> {
   try {
     const { supabase, user } = await requireUser();
+    if (user.isGuest) return { ok: false, error: GUEST_GOOGLE_MSG };
     const { data: c } = await supabase.from("candidates").select("*").eq("id", input.candidateId).single();
     const { data: job } = await supabase.from("jobs").select("*").eq("id", input.jobId).single<Job>();
     if (!c || !job) return { ok: false, error: "Candidate not found." };
@@ -140,6 +143,7 @@ export async function cancelInterview(interviewId: string): Promise<ActionResult
 export async function exportResults(jobId: string): Promise<ActionResult> {
   try {
     const { supabase, user } = await requireUser();
+    if (user.isGuest) return { ok: false, error: GUEST_GOOGLE_MSG };
     const { data: job } = await supabase.from("jobs").select("*").eq("id", jobId).single<Job>();
     if (!job) return { ok: false, error: "Job not found." };
     const { current } = await getRubrics(supabase, job);

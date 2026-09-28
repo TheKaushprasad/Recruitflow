@@ -5,6 +5,7 @@ import { after } from "next/server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/supabase/server";
+import { GUEST_GOOGLE_MSG } from "@/lib/guest";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { googleFor } from "@/lib/google/auth";
 import { setAcceptingResponses, upsertForm } from "@/lib/google/forms";
@@ -160,6 +161,7 @@ export async function saveQuestions(
 export async function publishForm(jobId: string): Promise<ActionResult> {
   try {
     const { supabase, user } = await requireUser();
+    if (user.isGuest) return { ok: false, error: GUEST_GOOGLE_MSG };
     const { data: job } = await supabase.from("jobs").select("*").eq("id", jobId).single<Job>();
     if (!job) return { ok: false, error: "Job not found." };
     const { data: qs } = await supabase.from("form_questions").select("*").eq("job_id", jobId).order("position");
@@ -195,6 +197,7 @@ export async function publishForm(jobId: string): Promise<ActionResult> {
 export async function linkExistingForm(jobId: string, formUrl: string, sheetUrl: string): Promise<ActionResult> {
   try {
     const { supabase, user } = await requireUser();
+    if (user.isGuest) return { ok: false, error: GUEST_GOOGLE_MSG };
     const sheetId = parseSheetId(sheetUrl);
     if (!sheetId) return { ok: false, error: "That doesn't look like a Google Sheets link. Copy it from the browser address bar of the response sheet." };
     const formId = formUrl.trim() ? parseFormId(formUrl) : null;
@@ -214,7 +217,8 @@ export async function linkExistingForm(jobId: string, formUrl: string, sheetUrl:
 
 /** Pulls new responses and scores pending candidates now instead of waiting for the scheduler. */
 export async function syncNow(jobId: string): Promise<ActionResult> {
-  const { supabase } = await requireUser();
+  const { supabase, user } = await requireUser();
+  if (user.isGuest) return { ok: false, error: GUEST_GOOGLE_MSG };
   const { data: job } = await supabase.from("jobs").select("*").eq("id", jobId).single<Job>();
   if (!job) return { ok: false, error: "Job not found." };
   if (job.status === "closed") return { ok: false, error: "This job is closed. Reopen it to pull in new responses." };

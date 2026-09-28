@@ -3,6 +3,8 @@
 import { after } from "next/server";
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/supabase/server";
+import { GUEST, guestAiBlocked } from "@/lib/guest";
+import { DEMO_MODEL } from "@/lib/demo/seed";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { workStage2 } from "@/lib/worker";
 import { errorMessage } from "@/lib/errors";
@@ -16,8 +18,17 @@ const MAX_PER_RUN = 100;
 /** Runs (or re-runs) the stage-2 evaluation: CV + portfolio + GitHub against the JD and stage-2 rubric. */
 export async function startDeepEvaluation(jobId: string, candidateIds: string[]): Promise<ActionResult> {
   try {
-    const { supabase } = await requireUser();
+    const { supabase, user } = await requireUser();
     if (!candidateIds.length) return { ok: false, error: "Select at least one candidate." };
+    if (user.isGuest) {
+      // The sample reviews don't count; guests can run a few of their own.
+      const { count } = await supabase.from("deep_evaluations").select("id", { count: "exact", head: true }).or(`model.is.null,model.neq.${DEMO_MODEL}`);
+      if ((count ?? 0) + candidateIds.length > GUEST.cvReviews) {
+        return { ok: false, error: `The demo includes ${GUEST.cvReviews} CV review of your own (the sample reviews are already done). Create a free account to review more.` };
+      }
+      const why = await guestAiBlocked();
+      if (why) return { ok: false, error: why };
+    }
     if (candidateIds.length > MAX_PER_RUN) return { ok: false, error: `Evaluate up to ${MAX_PER_RUN} candidates at a time.` };
     const { data: job } = await supabase.from("jobs").select("*").eq("id", jobId).single<Job>();
     if (!job) return { ok: false, error: "Job not found." };

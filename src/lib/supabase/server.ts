@@ -24,6 +24,8 @@ export interface SessionUser {
   id: string;
   email: string | undefined;
   user_metadata: Record<string, unknown>;
+  /** Signed in anonymously through "Try the demo": a temporary workspace with limits. */
+  isGuest: boolean;
 }
 
 /**
@@ -40,6 +42,7 @@ export const requireUser = cache(async () => {
     id: c.sub,
     email: typeof c.email === "string" ? c.email : undefined,
     user_metadata: (c.user_metadata as Record<string, unknown>) ?? {},
+    isGuest: c.is_anonymous === true,
   };
   return { supabase, user };
 });

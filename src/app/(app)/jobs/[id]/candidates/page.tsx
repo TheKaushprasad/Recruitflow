@@ -2,6 +2,7 @@ import { requireUser } from "@/lib/supabase/server";
 import { activeProvider, PROVIDER_LABEL } from "@/lib/ai/provider";
 import { getCandidates, getJob, getRubrics, getStages } from "@/lib/data";
 import { CandidatesTable } from "./CandidatesTable";
+import type { ApplyQuestion } from "@/components/TestApplication";
 import type { EmailTemplate } from "@/lib/types";
 
 // Server actions on this page may score candidates in the background (after()).
@@ -10,13 +11,17 @@ export const maxDuration = 300;
 export default async function CandidatesPage({ params, searchParams }: PageProps<"/jobs/[id]/candidates">) {
   const { id } = await params;
   const sp = await searchParams;
-  const { supabase } = await requireUser();
+  const { supabase, user } = await requireUser();
   const job = await getJob(supabase, id);
-  const [cands, rubrics, stages, templates] = await Promise.all([
+  const [cands, rubrics, stages, templates, demoQuestions] = await Promise.all([
     getCandidates(supabase, job),
     getRubrics(supabase, job),
     getStages(supabase, id),
     supabase.from("email_templates").select("*").order("created_at").then((r) => (r.data ?? []) as EmailTemplate[]),
+    // Guests get "Submit a test application", built from this job's form questions.
+    user.isGuest
+      ? supabase.from("form_questions").select("title, type, options, role").eq("job_id", id).order("position").then((r) => (r.data ?? []) as ApplyQuestion[])
+      : Promise.resolve(null),
   ]);
   // All criteria across versions, so a stale evaluation still resolves names.
   const criteria = rubrics.all.flatMap((r) => r.rubric_criteria.map((c) => ({ ...c, version: r.version })));
@@ -31,6 +36,7 @@ export default async function CandidatesPage({ params, searchParams }: PageProps
       initialFilter={typeof sp.f === "string" ? sp.f : "all"}
       openId={typeof sp.c === "string" ? sp.c : null}
       aiName={PROVIDER_LABEL[activeProvider() ?? "openai"]}
+      demo={demoQuestions ? { questions: demoQuestions, autoOpen: sp.apply === "1" } : null}
     />
   );
 }
