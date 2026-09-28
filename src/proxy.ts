@@ -1,7 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-const PUBLIC = ["/login", "/auth", "/api/cron"];
+const PUBLIC = ["/login", "/auth", "/api/cron", "/privacy", "/terms", "/opengraph-image"];
 
 export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });
@@ -27,9 +27,12 @@ export async function proxy(request: NextRequest) {
   const path = request.nextUrl.pathname;
   // The landing page ("/") is public; everything else needs a session (a guest demo counts).
   if (!data?.claims?.sub && path !== "/" && !PUBLIC.some((p) => path.startsWith(p))) {
+    // Sign in on the home page, then come back here.
     const url = request.nextUrl.clone();
-    url.pathname = "/login";
+    url.pathname = "/";
     url.search = "";
+    url.searchParams.set("signin", "1");
+    url.searchParams.set("next", path + request.nextUrl.search);
     return NextResponse.redirect(url);
   }
   return response;

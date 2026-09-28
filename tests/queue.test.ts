@@ -41,3 +41,14 @@ test("summary names strong, partial and weak items", () => {
   );
   assert.equal(summarise([]), "Screened on the form answers.");
 });
+
+import { safeNext } from "../src/lib/next-path.ts";
+
+test("sign-in return paths stay on this site", () => {
+  assert.equal(safeNext("/jobs/abc?f=review"), "/jobs/abc?f=review");
+  assert.equal(safeNext("//evil.com"), null);
+  assert.equal(safeNext("https://evil.com"), null);
+  assert.equal(safeNext("/\\evil.com"), null);
+  assert.equal(safeNext(""), null);
+  assert.equal(safeNext(null), null);
+});

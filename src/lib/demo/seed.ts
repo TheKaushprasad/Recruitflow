@@ -1,10 +1,8 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { aggregate } from "../aggregate";
-import { answerFor, checkRule } from "../rules";
-import { summarise } from "../summary";
-import type { Decision, DeepResult } from "../types";
+import type { DeepResult } from "../types";
 import { DEMO_CANDIDATES, DEMO_JOB, DEMO_QUESTIONS, DEMO_RULES, DEMO_STAGE2, DEMO_STAGES } from "./fixture";
+import { DEMO_THRESHOLD, demoAnswers, scoreStage1, scoreStage2 } from "./score";
 
 /** Marks pre-written stage-2 reviews, so guest limits count only the reviews they run themselves. */
 export const DEMO_MODEL = "demo-sample";
@@ -24,7 +22,7 @@ const must = <T,>(r: { data: T | null; error: { message: string } | null }, what
  */
 export async function seedDemo(db: SupabaseClient, userId: string): Promise<string> {
   const rid = userId;
-  const threshold = 0.7;
+  const threshold = DEMO_THRESHOLD;
 
   const job = must(
     await db.from("jobs").insert({
@@ -66,22 +64,10 @@ export async function seedDemo(db: SupabaseClient, userId: string): Promise<stri
   await db.from("jobs").update({ current_rubric_id: rubricId }).eq("id", job.id);
 
   // Candidates, with their form answers in the form's question order.
-  const answersOf = (c: (typeof DEMO_CANDIDATES)[number]) => [
-    { question: "Full name", answer: c.name },
-    { question: "Email", answer: c.email },
-    { question: "Current city", answer: c.answers.city },
-    { question: "Notice period", answer: c.answers.notice },
-    { question: "Expected CTC", answer: c.answers.ctc },
-    { question: "Years of product management experience", answer: c.answers.years },
-    { question: "Tell us about an AI or ML product or feature you shipped", answer: c.answers.project },
-    { question: "How do you decide what to build next? Share a recent example.", answer: c.answers.prio },
-    { question: "CV link", answer: "" },
-    { question: "Portfolio or GitHub", answer: "" },
-  ];
   const cands = must(
     await db.from("candidates").insert(DEMO_CANDIDATES.map((c, i) => ({
       recruiter_id: rid, job_id: job.id, external_id: `demo-seed-${i}`, name: c.name, email: c.email,
-      answers: answersOf(c), submitted_at: ago(c.minutesAgo), created_at: ago(c.minutesAgo), score_status: "scored",
+      answers: demoAnswers(c), submitted_at: ago(c.minutesAgo), created_at: ago(c.minutesAgo), score_status: "scored",
       stage2_at: c.stage2 ? ago(Math.max(5, c.minutesAgo - 120)) : null,
       stage_id: c.pipeline ? stageId(c.pipeline) : null,
     }))).select("id, external_id"),
@@ -90,33 +76,12 @@ export async function seedDemo(db: SupabaseClient, userId: string): Promise<stri
   const candId = (i: number) => cands.find((c) => c.external_id === `demo-seed-${i}`)!.id;
 
   // Stage 1: exact rules re-checked in code, AI decisions from the fixture, scored like the real thing.
-  const results = DEMO_CANDIDATES.map((c) => {
-    const answers = answersOf(c);
-    const finals = DEMO_RULES.map((r) => {
-      if (r.rule.op === "in") {
-        const chk = checkRule(r.rule, answerFor(r.rule, answers));
-        return { r, decision: chk.outcome as Decision, confidence: chk.outcome === "unclear" ? 0.5 : 1, evidence: chk.detail, by: "rule" as const, init: null };
-      }
-      const [decision, confidence, evidence, by = "jev", init = null] = c.ai[r.key as keyof typeof c.ai];
-      return { r, decision, confidence, evidence, by, init };
-    });
-    const agg = aggregate(
-      finals.map((f) => ({ kind: "rule" as const, action: f.r.rule.action, weight: f.r.weight, decision: f.decision, confidence: f.confidence, judgedByAi: f.by !== "rule" })),
-      threshold, { filterPoints: true },
-    );
-    const rejected = finals.find((f) => f.r.rule.action === "reject" && f.decision === "fail");
-    const reason = rejected
-      ? `Fails filter “${rejected.r.name}”: ${rejected.evidence} AI screening skipped.`
-      : c.reason || summarise(finals.map((f) => ({ criterion: { name: f.r.name }, decision: f.decision })));
-    // A rejecting filter stops screening before any AI call, as in the live app.
-    const kept = rejected ? finals.filter((f) => f.by === "rule") : finals;
-    return { c, finals: kept, agg, rejected, reason };
-  });
+  const results = DEMO_CANDIDATES.map((c) => ({ c, ...scoreStage1(c) }));
 
   const evals = must(
     await db.from("evaluations").insert(results.map((x, i) => ({
       recruiter_id: rid, candidate_id: candId(i), rubric_id: rubricId,
-      score: x.rejected ? 0 : x.agg.score, confidence: Math.round(x.agg.confidence * 1000) / 1000,
+      score: x.score, confidence: Math.round(x.agg.confidence * 1000) / 1000,
       disqualified: x.agg.disqualified, needs_review: x.agg.needsReview, reason: x.reason,
       created_at: ago(Math.max(1, x.c.minutesAgo - 2)),
     }))).select("id, candidate_id"),
@@ -137,15 +102,8 @@ export async function seedDemo(db: SupabaseClient, userId: string): Promise<stri
   const deepRows = DEMO_CANDIDATES.flatMap((c, i) => {
     if (!c.stage2) return [];
     const s = c.stage2;
-    const carried: DeepResult[] = results[i].finals
-      .filter((f) => f.r.rule.action !== "score")
-      .map((f) => ({ criterion_id: critId(f.r.name), name: f.r.name, kind: "rule", action: f.r.rule.action, weight: 0, decision: f.decision, confidence: f.confidence, evidence: f.evidence || "Checked on the form answer.", sources: ["form"] }));
-    const judged: DeepResult[] = DEMO_STAGE2.map((d) => {
-      const [decision, confidence, evidence, sources] = s.results[d.key];
-      return { criterion_id: critId(d.name), name: d.name, kind: d.kind, weight: d.weight, decision, confidence, evidence, sources };
-    });
-    const all = [...carried, ...judged];
-    const agg = aggregate(all.map((r) => ({ kind: r.kind, action: r.action, weight: r.weight, decision: r.decision, confidence: r.confidence })), threshold);
+    const { results: scored, agg } = scoreStage2(c, results[i].finals)!;
+    const all: DeepResult[] = scored.map((r) => ({ ...r, criterion_id: critId(r.name) }));
     const reviewedAt = ago(Math.max(3, c.minutesAgo - 150));
     return [{
       recruiter_id: rid, job_id: job.id, candidate_id: candId(i), rubric_id: rubricId, status: "done",
