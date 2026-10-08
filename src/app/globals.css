@@ -755,3 +755,16 @@ th[aria-sort] .sort-ind{opacity:1;color:var(--green-ink)}
 .legal-body h2{font-size:19px;margin:32px 0 8px}
 .legal-body ul{padding-left:20px;display:grid;gap:6px}
 .legal-body a{color:var(--green-ink)}
+
+/* ---- product demo video (YouTube) ---- */
+.lp-video{position:relative;border-radius:20px;overflow:hidden;border:1px solid var(--line);box-shadow:var(--shadow);background:#0e1512;aspect-ratio:16/9}
+.lp-video iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+.lp-play{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:14px;border:0;padding:0;cursor:pointer;color:var(--on-accent);background:#0e1512}
+.lp-play img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:.9}
+.lp-play-ico,.lp-play-txt{position:relative}
+.lp-play-ico{width:68px;height:68px;border-radius:50%;display:grid;place-items:center;background:var(--lime);box-shadow:0 10px 30px -8px rgba(0,0,0,.5);transition:transform .15s}
+.lp-play:hover .lp-play-ico{transform:scale(1.06)}
+.lp-play-txt{display:grid;text-align:left;background:rgba(255,255,255,.92);border-radius:14px;padding:10px 14px;line-height:1.3}
+.lp-play-txt b{font-size:15px}
+.lp-play-txt span{font-size:12.5px;color:#4f5d56}
+@media (max-width:560px){.lp-play-txt{display:none}}

@@ -5,6 +5,7 @@ import { Suspense } from "react";
 import { createClient } from "@/lib/supabase/server";
 import { DemoButton } from "@/components/DemoButton";
 import { SignInDialog } from "@/components/SignInDialog";
+import { DemoVideo } from "@/components/DemoVideo";
 import { Icon, type IconName } from "@/components/Icon";
 import { safeNext } from "@/lib/next-path";
 import { DEMO_CANDIDATES, DEMO_JOB } from "@/lib/demo/fixture";
@@ -147,6 +148,12 @@ export default async function Landing({ searchParams }: PageProps<"/">) {
             {signedIn ? null : <DemoButton label="View full reasoning →" className="btn-link" />}
           </div>
         </div>
+      </section>
+
+      <section id="demo" className="lp-section">
+        <p className="eyebrow">Product demo</p>
+        <h2>See reqroot in action.</h2>
+        <DemoVideo label="reqroot product walkthrough" />
       </section>
 
       <section id="how" className="lp-section">
